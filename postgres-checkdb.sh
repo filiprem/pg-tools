@@ -17,14 +17,19 @@ for tool in postgres pg_ctl pg_controldata psql; do
 	eval $tool=${found:-$tool}
 done
 
-# find data directory
-for data in \
+clusters=$(
+ls -d \
 	"$PGDATA" \
 	"$HOME/data" \
 	"$($psql -XqAtc 'show data_directory')" \
 	/var/lib/pgsql/*/data \
 	/var/lib/pgsql/data \
-	/var/lib/postgresql/*/main
+	/var/lib/postgresql/*/* \
+	2>/dev/null | sort | uniq
+)
+
+# find data directory
+for data in $clusters
 do
   [ -d "$data" -a -f "$data/PG_VERSION" ] && break
 done
