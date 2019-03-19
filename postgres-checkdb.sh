@@ -6,6 +6,8 @@
 log=/tmp/postgres-checkdb.log
 truncate -s 0 $log || exit 1
 
+export LC_ALL=C
+
 debug () {
   echo [$0 $$ $(date)] "$@" 
 }
@@ -43,7 +45,8 @@ for command in \
   "uptime" \
   "lscpu" \
   "df -hT" \
-  "free -m" \
+  "iostat -cdtxyz 5 1" \
+  "free -h" \
   "grep ^VmPeak /proc/$(head -n1 $data/postmaster.pid)/status" \
   "grep ^Hugepagesize /proc/meminfo" \
   "ps xf" \
@@ -63,7 +66,7 @@ done
 for sql in \
   "SELECT version()" \
   "SELECT pg_database_size(datname), CASE WHEN (blks_read+blks_hit)>0 THEN 100.0*blks_hit/(blks_read+blks_hit) END AS hit_ratio, * FROM pg_stat_database" \
-  "SELECT clock_timestamp()-xact_start AS xact_life, clock_timestamp()-backend_start backend_life, * FROM pg_stat_activity ORDER BY xact_start, backend_start" \
+  "SELECT age(now(), xact_start) xact_age, age(now(), backend_start) backend_age, * FROM pg_stat_activity ORDER BY xact_start, backend_start" \
   "SELECT * FROM pg_stat_archiver" \
   "SELECT * FROM pg_stat_bgwriter" \
   "SELECT * FROM pg_stat_replication" \
@@ -93,7 +96,8 @@ do
     "SELECT *, CASE WHEN idx_blks_read+idx_blks_hit>0 THEN 100.0*idx_blks_hit/(idx_blks_read+idx_blks_hit) END AS hit_ratio FROM pg_statio_all_indexes ORDER BY coalesce(idx_blks_read+idx_blks_hit,idx_blks_hit,idx_blks_read,0) DESC LIMIT 1000" \
 	"SELECT *, CASE WHEN (heap_blks_read+heap_blks_hit+idx_blks_read+idx_blks_hit+coalesce(toast_blks_read+toast_blks_hit+tidx_blks_read+tidx_blks_hit,0))>0 THEN 100.0*(heap_blks_hit+idx_blks_hit+coalesce(toast_blks_hit+tidx_blks_hit,0))/(heap_blks_read+heap_blks_hit+idx_blks_read+idx_blks_hit+coalesce(toast_blks_read+toast_blks_hit+tidx_blks_read+tidx_blks_hit,0)) END AS hit_ratio FROM pg_statio_all_tables ORDER BY coalesce(heap_blks_read+heap_blks_hit+idx_blks_read+idx_blks_hit, heap_blks_read+heap_blks_hit, 0) DESC LIMIT 1000" \
 	"SELECT schemaname, tablename, attname, null_frac, avg_width, n_distinct, substring(most_common_vals::text from 1 for 2000) as most_common_vals, most_common_freqs FROM pg_stats NATURAL JOIN (SELECT n.nspname AS schemaname, c.relname AS tablename FROM pg_namespace n, pg_class c WHERE c.relnamespace=n.oid AND c.relkind='r' AND c.relpages>1 ORDER BY c.relpages DESC LIMIT 20) x ORDER BY schemaname, tablename, attname" \
-    "SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000"
+    "SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000" \
+	"SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1"
   do
     debug "Running SQL in $db: $sql"
 	{
