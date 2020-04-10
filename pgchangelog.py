@@ -69,24 +69,23 @@ def main():
                         help='Generate CSV output')
     args = parser.parse_args()
 
-    # top level changelog for the major release
     major = args.major or pg_major_version_now()
-    process_changelog(major=major, minor=None, regex=args.regex, args=args)
 
-    # changelogs for bugfix releases
     if args.minor is None:
-        process_changelog(
-            major=major,
-            minor=pg_minor_version_now(major),
-            regex=args.regex,
-            args=args)
-    else:
-        for m in range(1, args.minor + 1):
+        process_changelog(major=major, minor=None, regex=args.regex, args=args)
+        for m in range(1, pg_minor_version_now(major)):
             process_changelog(
                 major=major,
                 minor=str(m),
                 regex=args.regex,
                 args=args)
+    else:
+        process_changelog(
+            major=major,
+            minor=str(args.minor),
+            regex=args.regex,
+            args=args)
+
     sys.exit()
 
 
