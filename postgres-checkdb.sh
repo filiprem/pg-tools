@@ -54,6 +54,7 @@ for command in \
   "$pg_ctl status -D $data" \
   "$pg_controldata $data" \
   "du -sLh $data" \
+  "du -sLh $data/pg_wal" \
   "du -sLh $data/pg_xlog" \
   "$psql -l"
 do
@@ -62,6 +63,8 @@ do
   eval $command                                               >> $log 2>&1
   echo "======== Command output finished =========="          >> $log 2>&1
 done
+
+# Cluster-wide queries.
 
 for sql in \
   "SELECT version()" \
@@ -73,7 +76,8 @@ for sql in \
   "SELECT * FROM pg_stat_ssl WHERE ssl" \
   "SELECT * FROM pg_stat_wal_receiver" \
   "SELECT * FROM pg_authid ORDER BY oid LIMIT 1000" \
-  "SELECT * FROM pg_settings WHERE setting <> boot_val ORDER BY source, sourcefile, sourceline"
+  "SELECT * FROM pg_settings WHERE setting <> boot_val ORDER BY source, sourcefile, sourceline" \
+  "SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn())"
 do
   debug "Running SQL: $sql"
   {
@@ -82,6 +86,8 @@ do
     echo "======== SQL output finished ========"
   } >> $log 2>&1
 done
+
+# Per-database queries.
 
 for db in $( $psql -XqAtc "SELECT datname FROM pg_database 
   WHERE datname NOT IN ('template0','template1','postgres')
