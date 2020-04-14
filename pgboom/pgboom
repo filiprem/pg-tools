@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+
+#import os
+import sys
+import re
+import argparse
+import psycopg2
+#import psycopg2.extensions
+#import psycopg2.extras
+#import psycopg2.sql as sql
+from time import localtime, strftime
+from pathlib import Path
+
+
+PROGNAME = 'pgboom'
+
+PROGDESC = """
+Utility to extract object metadata (ie., database schema) from PostgreSQL database to directory structure.
+
+Each db object goes into separate file, DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql
+
+"""
+
+ARGS = None
+
+# Rules for producing object definitions:
+# * 'list' query must produce nspname and objname.
+# * full schema names must be included.
+# * 'create' query must include trailing semicolon.
+METADATAOBJECTS = {
+    'VIEW': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'v'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """
+        SELECT E'CREATE OR REPLACE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
+        """
+    },
+    'FUNCTION': {
+        'list': """
+        SELECT n.nspname, p.proname || '(' ||
+        array_to_string(array(select (select t.typname from pg_type t where t.oid=a.oid) from unnest(p.proargtypes) a(oid)),',')
+        || ')' AS objname, p.oid
+        FROM pg_proc p, pg_namespace n
+        WHERE n.oid=p.pronamespace
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """SELECT pg_get_functiondef(__OID__) || ';'"""
+    },
+    'TABLE': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'r'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        # in fact this is overriden later.
+        # we just anticipate future built-in function name here.
+        'create': """SELECT pg_get_tabledef(__OID__) || ';'"""
+    },
+    'INDEX': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n, pg_index i
+        WHERE n.oid = c.relnamespace AND c.relkind = 'i' AND i.indexrelid = c.oid AND NOT i.indisprimary
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'"""
+    },
+    'CONSTRAINT': {
+        'list': """
+        SELECT n.nspname, con.conname AS objname, con.oid,
+            crn.nspname AS conrelnspname, cr.relname AS conrelname
+        FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
+        WHERE n.oid = con.connamespace
+        AND cr.oid = con.conrelid
+        AND crn.oid = cr.relnamespace
+        AND con.contype NOT IN ('u')
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
+            '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__', pg_get_constraintdef(__OID__, true))"""
+    }
+}
+
+
+def main():
+
+    parser = argparse.ArgumentParser(description=PROGDESC)
+
+    # positional arguments: ACTION DSN DIR
+    parser.add_argument('ACTION', help="Action (explode/implode)")
+    parser.add_argument(
+        'DSN', help="PostgreSQL data source in 'key=value' format")
+    parser.add_argument('DIR', help="Destination/source directory")
+    # options
+    parser.add_argument('--Class', '-C', choices=METADATAOBJECTS.keys(),
+                        help="Type of objects to extract/load")
+    parser.add_argument('--Schema', '-S', help="Database schema name filter")
+    parser.add_argument('--Object', '-O', help="Database object name filter")
+    parser.add_argument('--test', action='store_true',
+                        help="Perform built-in test")
+    parser.add_argument('--debug', '--verbose', '-v',
+                        action='store_true', help="Set verbose debugging on")
+    parser.add_argument('--dry-run', action='store_true',
+                        help="Simulation mode (avoid any side effects)")
+
+    global ARGS
+    ARGS = parser.parse_args()
+
+    if ARGS.dry_run:
+        debug('Running in simulation mode', 'INFO')
+
+    if ARGS.test:
+        debug("Entering test code", 'INFO')
+        import doctest
+        doctest.testmod(verbose=ARGS.debug)
+        sys.exit(0)
+
+    debug("Testing database connection for metadata import")
+    try:
+        conn = pgconn(ARGS.DSN)
+    except BaseException:
+        debug("""Connection failed. You are supposed to provide connection parameters
+              via environment variables [PGHOST, PGDATABASE etc], as specified in
+              https://www.postgresql.org/docs/current/libpq-envars.html""",
+              'ERROR')
+        raise
+
+    with conn.cursor() as cur:
+        cur.execute('SELECT current_database(), current_user, version()')
+        (db, usr, ver) = cur.fetchone()
+        debug('Connection OK, user={}, db={}, version={}'.format(usr, db, ver))
+
+    if ARGS.ACTION == 'explode':
+        explode(conn)
+    elif ARGS.ACTION == 'implode':
+        raise ValueError('Not Implemented')
+    else:
+        raise ValueError('Action not supported: ' + ARGS.ACTION)
+
+
+def explode(conn):
+    """Get metadata from Postgres into directory.
+    """
+    try:
+        if not ARGS.dry_run:
+            Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        debug("could not access output directory {}".format(ARGS.DIR), 'ERROR')
+        raise
+
+    _counter = {}
+
+    for objclass in METADATAOBJECTS:
+        if ARGS.Class is not None and objclass != ARGS.Class:
+            continue
+        _count = import_class(conn, objclass)
+        _counter[objclass] = _count
+
+    debug('Finished importing objects to {}. Stats: {}'.format(
+        ARGS.DIR, _counter), 'INFO')
+
+
+def gettabledef(conn, taboid):
+    """
+        Generate CREATE TABLE statement for given table.
+
+    >>> pg = pgconn('')
+    >>> pgcurs = pg.cursor()
+    >>> pgcurs.execute('''CREATE TEMP TABLE gettabledef_testing (
+    ...    intcol integer,
+    ...    textcol text DEFAULT 'footext')
+    ...    ''')
+    >>> pgcurs.execute("SELECT 'gettabledef_testing'::regclass::oid")
+    >>> temptableoid = pgcurs.fetchone()[0]
+    >>> gettabledef(pg, temptableoid) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+    CREATE TEMP TABLE pg_temp_....gettabledef_testing (
+        intcol integer,
+        textcol text DEFAULT 'footext'::text
+    );
+    """
+    with conn.cursor() as cur:
+        versql = "SELECT current_setting('server_version_num')::integer"
+        cur.execute(versql)
+        ver = cur.fetchone()[0]
+        if ver >= 120000:
+            tabdefsql = """
+WITH attrdef AS (
+    SELECT
+        n.nspname,
+        c.relname,
+        pg_catalog.array_to_string(c.reloptions || array(select 'toast.' || x from pg_catalog.unnest(tc.reloptions) x), ', ') as relopts,
+        c.relpersistence,
+        a.attnum,
+        a.attname,
+        pg_catalog.format_type(a.atttypid, a.atttypmod) as atttype,
+        (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) for 128) FROM pg_catalog.pg_attrdef d
+            WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef) as attdefault,
+        a.attnotnull,
+        (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+            WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) as attcollation,
+        a.attidentity,
+        a.attgenerated
+    FROM pg_catalog.pg_attribute a
+    JOIN pg_catalog.pg_class c ON a.attrelid = c.oid
+    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+    LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)
+    WHERE a.attrelid = %(taboid)s
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    ORDER BY a.attnum
+),
+coldef AS (
+    SELECT
+        attrdef.nspname,
+        attrdef.relname,
+        attrdef.relopts,
+        attrdef.relpersistence,
+        pg_catalog.format(
+            '%%I %%s%%s%%s%%s%%s',
+            attrdef.attname,
+            attrdef.atttype,
+            case when attrdef.attcollation is null then '' else pg_catalog.format(' COLLATE %%I', attrdef.attcollation) end,
+            case when attrdef.attnotnull then ' NOT NULL' else '' end,
+            case when attrdef.attdefault is null then ''
+                else case when attrdef.attgenerated='s' then pg_catalog.format(' GENERATED ALWAYS AS (%%s) STORED', attrdef.attdefault)
+                    when attrdef.attgenerated <> '' then ' GENERATED AS NOT_IMPLEMENTED'
+                    else pg_catalog.format(' DEFAULT %%s', attrdef.attdefault)
+                end
+            end,
+            case when attrdef.attidentity<>'' then pg_catalog.format(' GENERATED %%s AS IDENTITY',
+                    case attrdef.attidentity when 'd' then 'BY DEFAULT' when 'a' then 'ALWAYS' else 'NOT_IMPLEMENTED' end)
+                else '' end
+        ) as col_create_sql
+    FROM attrdef
+    ORDER BY attrdef.attnum
+),
+tabdef AS (
+    SELECT
+        coldef.nspname,
+        coldef.relname,
+        coldef.relopts,
+        coldef.relpersistence,
+        string_agg(coldef.col_create_sql, E',\n    ') as cols_create_sql
+    FROM coldef
+    GROUP BY
+        coldef.nspname, coldef.relname, coldef.relopts, coldef.relpersistence
+)
+SELECT
+    format(
+        E'CREATE%%s TABLE %%I.%%I (\n    %%s\n)%%s;',
+        case tabdef.relpersistence when 't' then ' TEMP' when 'u' then ' UNLOGGED' else '' end,
+        tabdef.nspname,
+        tabdef.relname,
+        tabdef.cols_create_sql,
+        case when tabdef.relopts <> '' then format(' WITH (%%s)', tabdef.relopts) else '' end
+    ) as table_create_sql
+FROM tabdef
+            """
+        else:
+            tabdefsql = """
+WITH attrdef AS (
+    SELECT
+        n.nspname,
+        c.relname,
+        pg_catalog.array_to_string(c.reloptions || array(select 'toast.' || x from pg_catalog.unnest(tc.reloptions) x), ', ') as relopts,
+        c.relpersistence,
+        a.attnum,
+        a.attname,
+        pg_catalog.format_type(a.atttypid, a.atttypmod) as atttype,
+        (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) for 128) FROM pg_catalog.pg_attrdef d
+            WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef) as attdefault,
+        a.attnotnull,
+        (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+            WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) as attcollation,
+        a.attidentity
+    FROM pg_catalog.pg_attribute a
+    JOIN pg_catalog.pg_class c ON a.attrelid = c.oid
+    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+    LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)
+    WHERE a.attrelid = %(taboid)s
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    ORDER BY a.attnum
+),
+coldef AS (
+    SELECT
+        attrdef.nspname,
+        attrdef.relname,
+        attrdef.relopts,
+        attrdef.relpersistence,
+        pg_catalog.format(
+            '%%I %%s%%s%%s%%s%%s',
+            attrdef.attname,
+            attrdef.atttype,
+            case when attrdef.attcollation is null then '' else pg_catalog.format(' COLLATE %%I', attrdef.attcollation) end,
+            case when attrdef.attnotnull then ' NOT NULL' else '' end,
+            case when attrdef.attdefault is null then '' else pg_catalog.format(' DEFAULT %%s', attrdef.attdefault) end,
+            case when attrdef.attidentity<>'' then pg_catalog.format(' GENERATED %%s AS IDENTITY',
+                    case attrdef.attidentity when 'd' then 'BY DEFAULT' when 'a' then 'ALWAYS' else 'NOT_IMPLEMENTED' end)
+                else '' end
+        ) as col_create_sql
+    FROM attrdef
+    ORDER BY attrdef.attnum
+),
+tabdef AS (
+    SELECT
+        coldef.nspname,
+        coldef.relname,
+        coldef.relopts,
+        coldef.relpersistence,
+        string_agg(coldef.col_create_sql, E',\n    ') as cols_create_sql
+    FROM coldef
+    GROUP BY
+        coldef.nspname, coldef.relname, coldef.relopts, coldef.relpersistence
+)
+SELECT
+    format(
+        E'CREATE%%s TABLE %%I.%%I (\n    %%s\n)%%s;',
+        case tabdef.relpersistence when 't' then ' TEMP' when 'u' then ' UNLOGGED' else '' end,
+        tabdef.nspname,
+        tabdef.relname,
+        tabdef.cols_create_sql,
+        case when tabdef.relopts <> '' then format(' WITH (%%s)', tabdef.relopts) else '' end
+    ) as table_create_sql
+FROM tabdef
+            """
+        cur.execute(tabdefsql, {'taboid': taboid})
+        return cur.fetchone()[0]
+
+
+def make_where():
+    conditions = []
+    params = []
+    result = ''
+    if ARGS.Schema is not None:
+        conditions.append('nspname ~ %s')
+        params.append(ARGS.Schema)
+    if ARGS.Object is not None:
+        conditions.append('objname ~ %s')
+        params.append(ARGS.Object)
+    if conditions:
+        result = ' WHERE ' + ' AND '.join(conditions)
+    return (result, params)
+
+
+def import_class(conn, objclass):
+    """Import objects of given class. Return counter."""
+    _count = 0
+    objsql = METADATAOBJECTS.get(objclass)
+    if objsql is None:
+        raise ValueError(f'Object class {objclass} not supported')
+
+    debug(f'importing {objclass} definitions', 'INFO')
+
+    with conn.cursor() as cur:
+        _sqlselect = objsql['list']
+        _sqlfilter, _sqlparams = make_where()
+        _sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
+            _sqlselect, _sqlfilter)
+        cur.execute(_sqlquery, _sqlparams)
+        for r in cur:
+            if objclass == 'CONSTRAINT':
+                (nspname, objname, oid, conrelnspname, conrelname) = r
+            else:
+                (nspname, objname, oid) = r
+            fdir = f'{ARGS.DIR}/{objclass}/{nspname}'
+            fname = f'{objname}.sql'
+            with conn.cursor() as cur2:
+                objgen = objsql['create']
+                objgen = re.sub('__OID__', str(oid), objgen)
+                objgen = re.sub('__SCHEMA__', nspname, objgen)
+                objgen = re.sub('__OBJECT__', objname, objgen)
+                if objclass == 'CONSTRAINT':
+                    objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
+                    objgen = re.sub('__CONRELNAME__', conrelname, objgen)
+                    cur2.execute(objgen)
+                    res = cur2.fetchone()[0]
+                elif objclass == 'TABLE':
+                    res = gettabledef(conn, oid)
+                else:
+                    cur2.execute(objgen)
+                    res = cur2.fetchone()[0]
+
+                _count += 1
+
+                debug(f'going to save {fdir}/{fname}')
+                if not ARGS.dry_run:
+                    Path(fdir).mkdir(parents=True, exist_ok=True)
+                    with open(f'{fdir}/{fname}', 'w') as of:
+                        of.write(res)
+
+    return _count
+
+
+def debug(message, level='DEBUG', stream=sys.stdout):
+    """Emit a debug message.
+    """
+
+    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0, }
+    if levels.get(level) is None:
+        raise ValueError('wrong value for debug level: {}'.format(level))
+
+    emit_level = levels['INFO']
+    if ARGS.debug:
+        emit_level = levels['DEBUG']
+
+    if levels.get(level) < emit_level:
+        return
+
+    try:
+        caller = sys._getframe().f_back.f_code.co_name
+    except Exception:
+        caller = '(direct)'
+    ts = strftime("%F %X", localtime())
+    stream.write(
+        '{ts} {level} {caller} {message}\n'.format(
+            level=level,
+            message=message,
+            caller=caller,
+            ts=ts))
+    stream.flush()
+
+
+def pgconn(dsn='', autocommit=True):
+    """Get PostgreSQL connection.
+
+    Gets a new connection and sets application_name in the session.
+
+    >>> pg = pgconn('')
+    >>> pgcurs = pg.cursor()
+    >>> pgcurs.execute('SELECT 2+3')
+    >>> pgcurs.fetchone()
+    (5,)
+    """
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = autocommit
+    with conn.cursor() as cur:
+        # revert to standard search path to avoid side effects with
+        # pg_get_indexdef and friends.
+        cur.execute("SET search_path to public")
+        cur.execute("SET application_name = %s", (PROGNAME,))
+    return conn
+
+
+if __name__ == "__main__":
+    main()
