@@ -59,3 +59,12 @@ Synopsis
     --debug, --verbose, -v
                             Set verbose debugging on
     --dry-run             Simulation mode (avoid any side effects)
+
+Bugs
+----
+
+Please report bugs to 
+
+* (preferred) https://github.com/filiprem/pg-tools/issues
+* (last resort) directly to filip.rembialkowski@gmail.com.
+
