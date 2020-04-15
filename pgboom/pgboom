@@ -39,13 +39,26 @@ METADATAOBJECTS = {
         SELECT E'CREATE OR REPLACE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
         """
     },
-    'FUNCTION': {
+    'AGGREGATE': { # aggregate functions only
         'list': """
         SELECT n.nspname, p.proname || '(' ||
-        array_to_string(array(select (select t.typname from pg_type t where t.oid=a.oid) from unnest(p.proargtypes) a(oid)),',')
+        array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
         || ')' AS objname, p.oid
         FROM pg_proc p, pg_namespace n
-        WHERE n.oid=p.pronamespace
+        WHERE n.oid = p.pronamespace
+        AND p.prokind = 'a'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
+    },
+    'FUNCTION': { # all functions except aggregate
+        'list': """
+        SELECT n.nspname, p.proname || '(' ||
+        array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
+        || ')' AS objname, p.oid
+        FROM pg_proc p, pg_namespace n
+        WHERE n.oid = p.pronamespace
+        AND p.prokind <> 'a'
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
         'create': """SELECT pg_get_functiondef(__OID__) || ';'"""
@@ -165,6 +178,32 @@ def explode(conn):
         ARGS.DIR, _counter), 'INFO')
 
 
+def getaggdef(conn, aggoid):
+    """Generate CREATE AGGREGATE statement for given aggregate function.
+
+    Credits for SQL go to Erwin Brandstetter
+    [https://stackoverflow.com/a/48575430/540341].
+    """
+
+    aggdefsql = """
+SELECT format('CREATE AGGREGATE %%s (SFUNC = %%s, STYPE = %%s%%s%%s%%s%%s)'
+    , aggfnoid::regprocedure
+    , aggtransfn
+    , aggtranstype::regtype
+    , ', SORTOP = '    || NULLIF(aggsortop, 0)::regoper
+    , ', INITCOND = '  || agginitval
+    , ', FINALFUNC = ' || NULLIF(aggfinalfn, 0)
+    , CASE WHEN aggfinalextra THEN ', FINALFUNC_EXTRA' END
+) AS ddl_agg
+FROM pg_aggregate
+WHERE aggfnoid = %(oid)s
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(aggdefsql, {'oid': aggoid})
+        return cur.fetchone()[0]
+
+
 def gettabledef(conn, taboid):
     """
         Generate CREATE TABLE statement for given table.
@@ -227,7 +266,7 @@ coldef AS (
             case when attrdef.attcollation is null then '' else pg_catalog.format(' COLLATE %%I', attrdef.attcollation) end,
             case when attrdef.attnotnull then ' NOT NULL' else '' end,
             case when attrdef.attdefault is null then ''
-                else case when attrdef.attgenerated='s' then pg_catalog.format(' GENERATED ALWAYS AS (%%s) STORED', attrdef.attdefault)
+                else case when attrdef.attgenerated = 's' then pg_catalog.format(' GENERATED ALWAYS AS (%%s) STORED', attrdef.attdefault)
                     when attrdef.attgenerated <> '' then ' GENERATED AS NOT_IMPLEMENTED'
                     else pg_catalog.format(' DEFAULT %%s', attrdef.attdefault)
                 end
@@ -334,9 +373,15 @@ FROM tabdef
 
 
 def make_where():
+    """Construct a WHERE clause for object list filtering.
+
+    Return a tuple with two items:
+        1. SQL WHERE string with %s-style placeholders
+        2. list of parameters for the placeholders.
+    """
     conditions = []
     params = []
-    result = ''
+    clause = ''
     if ARGS.Schema is not None:
         conditions.append('nspname ~ %s')
         params.append(ARGS.Schema)
@@ -344,12 +389,13 @@ def make_where():
         conditions.append('objname ~ %s')
         params.append(ARGS.Object)
     if conditions:
-        result = ' WHERE ' + ' AND '.join(conditions)
-    return (result, params)
+        clause = ' WHERE ' + ' AND '.join(conditions)
+    return (clause, params)
 
 
 def import_class(conn, objclass):
-    """Import objects of given class. Return counter."""
+    """Import objects of given class. Return counter.
+    """
     _count = 0
     objsql = METADATAOBJECTS.get(objclass)
     if objsql is None:
@@ -382,6 +428,8 @@ def import_class(conn, objclass):
                     res = cur2.fetchone()[0]
                 elif objclass == 'TABLE':
                     res = gettabledef(conn, oid)
+                elif objclass == 'AGGREGATE':
+                    res = getaggdef(conn, oid)
                 else:
                     cur2.execute(objgen)
                     res = cur2.fetchone()[0]
