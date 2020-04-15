@@ -1,9 +1,11 @@
 pgboom
 ======
 
-Utility to extract object metadata (ie., database schema) from PostgreSQL database into directory of flat files.
+Utility to extract object metadata (ie., database schema) from PostgreSQL
+database to directory of flat SQL files, and vice versa.
 
 Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`
+
 
 Synopsis
 --------
@@ -53,6 +55,7 @@ pgboom implode 'host=localhost port=5432 dbname=dl' /tmp/dl --Class FUNCTION --S
 2020-04-15 18:25:22 INFO implode Finished imploding /tmp/dl into database. Stats: {'FUNCTION': 1}
 ```
 
+
 Known issues
 ------------
 
@@ -60,9 +63,11 @@ Known issues
 
 * PostgreSQL versions older than 11 are not supported.
 
-* WARNING! On "implode", file content is not validated. It is your responsibility to use trusted data source.
+* WARNING! On implode, file content is not validated. It is your responsibility to use trusted data source.
 
-* WARNING! On "implode", there is almost no SQL validation and if there are multiple statements in a file, they will all be executed.
+* WARNING! On implode, there is almost no SQL validation and if there are multiple statements in a file, they will all be executed.
+
+* The whole implode action does not care about dependencies and will most probably fail on a pre-populated database.
 
 * Not all object properties are reflected on explode. For example, `LEAKPROOF` attribute for functions is not exploded.
 
