@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 
-#import os
 import sys
 import re
 import argparse
 import psycopg2
-#import psycopg2.extensions
-#import psycopg2.extras
-#import psycopg2.sql as sql
 from time import localtime, strftime
 from pathlib import Path
 
@@ -15,7 +11,8 @@ from pathlib import Path
 PROGNAME = 'pgboom'
 
 PROGDESC = """
-Utility to extract object metadata (ie., database schema) from PostgreSQL database to directory structure.
+Utility to extract object metadata (ie., database schema) from PostgreSQL
+database to directory structure, and vice versa.
 
 Each db object goes into separate file, DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql
 
@@ -28,30 +25,7 @@ ARGS = None
 # * full schema names must be included.
 # * 'create' query must include trailing semicolon.
 METADATAOBJECTS = {
-    'VIEW': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
-        FROM pg_class c, pg_namespace n
-        WHERE n.oid = c.relnamespace AND c.relkind = 'v'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """
-        SELECT E'CREATE OR REPLACE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
-        """
-    },
-    'AGGREGATE': { # aggregate functions only
-        'list': """
-        SELECT n.nspname, p.proname || '(' ||
-        array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
-        || ')' AS objname, p.oid
-        FROM pg_proc p, pg_namespace n
-        WHERE n.oid = p.pronamespace
-        AND p.prokind = 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
-    },
-    'FUNCTION': { # all functions except aggregate
+    'FUNCTION': {  # all functions except aggregate
         'list': """
         SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
@@ -63,6 +37,20 @@ METADATAOBJECTS = {
         """,
         'create': """SELECT pg_get_functiondef(__OID__) || ';'"""
     },
+    'AGGREGATE': {  # aggregate functions only
+        'list': """
+        SELECT n.nspname, p.proname || '(' ||
+        array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
+        || ')' AS objname, p.oid
+        FROM pg_proc p, pg_namespace n
+        WHERE n.oid = p.pronamespace
+        AND p.prokind = 'a'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        # this is overriden later.
+        # we just anticipate future built-in function name here.
+        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
+    },
     'TABLE': {
         'list': """
         SELECT n.nspname, c.relname AS objname, c.oid
@@ -70,18 +58,9 @@ METADATAOBJECTS = {
         WHERE n.oid = c.relnamespace AND c.relkind = 'r'
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
-        # in fact this is overriden later.
+        # this is overriden later.
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_tabledef(__OID__) || ';'"""
-    },
-    'INDEX': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
-        FROM pg_class c, pg_namespace n, pg_index i
-        WHERE n.oid = c.relnamespace AND c.relkind = 'i' AND i.indexrelid = c.oid AND NOT i.indisprimary
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'"""
     },
     'CONSTRAINT': {
         'list': """
@@ -96,7 +75,27 @@ METADATAOBJECTS = {
         """,
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__', pg_get_constraintdef(__OID__, true))"""
-    }
+    },
+    'INDEX': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n, pg_index i
+        WHERE n.oid = c.relnamespace AND c.relkind = 'i' AND i.indexrelid = c.oid AND NOT i.indisprimary
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'"""
+    },
+    'VIEW': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'v'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """
+        SELECT E'CREATE OR REPLACE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
+        """
+    },
 }
 
 
@@ -133,7 +132,7 @@ def main():
         doctest.testmod(verbose=ARGS.debug)
         sys.exit(0)
 
-    debug("Testing database connection for metadata import")
+    debug("Testing database connection")
     try:
         conn = pgconn(ARGS.DSN)
     except BaseException:
@@ -151,7 +150,7 @@ def main():
     if ARGS.ACTION == 'explode':
         explode(conn)
     elif ARGS.ACTION == 'implode':
-        raise ValueError('Not Implemented')
+        implode(conn)
     else:
         raise ValueError('Action not supported: ' + ARGS.ACTION)
 
@@ -171,10 +170,45 @@ def explode(conn):
     for objclass in METADATAOBJECTS:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        _count = import_class(conn, objclass)
+        _count = explode_class(conn, objclass)
         _counter[objclass] = _count
 
-    debug('Finished importing objects to {}. Stats: {}'.format(
+    debug('Finished exploding database into {}. Stats: {}'.format(
+        ARGS.DIR, _counter), 'INFO')
+
+
+def implode(conn):
+    """Get metadata from a directory into Postgres.
+
+    Example directory representing a pgbench database initialized with
+    `pgbench -i --foreign-keys`:
+        /tmp/test/TABLE/public/pgbench_tellers.sql
+        /tmp/test/TABLE/public/pgbench_history.sql
+        /tmp/test/TABLE/public/pgbench_branches.sql
+        /tmp/test/TABLE/public/pgbench_accounts.sql
+        /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_accounts_pkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_tellers_pkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_branches_pkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
+        /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
+    """
+    _root = Path(ARGS.DIR)
+    if not (_root.exists() and _root.is_dir()):
+        debug(f'Directory {ARGS.DIR} does not exist', 'ERROR')
+        sys.exit(1)
+
+    _counter = {}
+
+    for objclass in METADATAOBJECTS:
+        if ARGS.Class is not None and objclass != ARGS.Class:
+            continue
+        _count = implode_class(conn, objclass)
+        _counter[objclass] = _count
+
+    debug('Finished imploding {} into database. Stats: {}'.format(
         ARGS.DIR, _counter), 'INFO')
 
 
@@ -393,15 +427,17 @@ def make_where():
     return (clause, params)
 
 
-def import_class(conn, objclass):
-    """Import objects of given class. Return counter.
+def explode_class(conn, objclass):
+    """Extract objects of given class from database to flat files.
+
+    Return counter.
     """
     _count = 0
     objsql = METADATAOBJECTS.get(objclass)
     if objsql is None:
         raise ValueError(f'Object class {objclass} not supported')
 
-    debug(f'importing {objclass} definitions', 'INFO')
+    debug(f'exploding {objclass} definitions', 'INFO')
 
     with conn.cursor() as cur:
         _sqlselect = objsql['list']
@@ -442,7 +478,81 @@ def import_class(conn, objclass):
                     with open(f'{fdir}/{fname}', 'w') as of:
                         of.write(res)
 
-    return _count
+    return _count or None
+
+
+def implode_class(conn, objclass):
+    """Load objects from directory into database.
+
+    Todos:
+        overwrite?
+        dependencies?
+    """
+    # DIR/TABLE
+    _dir = Path(ARGS.DIR, objclass)
+    if not (_dir.exists() and _dir.is_dir()):
+        debug(f'Directory {_dir} does not exist', 'INFO')
+        return None
+
+    _count = 0
+
+    # DIR/TABLE/public
+    for _schemadir in _dir.iterdir():
+        if not _schemadir.is_dir():
+            continue
+        _schema = _schemadir.name
+        if ARGS.Schema and not re.search(ARGS.Schema, _schema):
+            debug(f'Ignoring {_schemadir} due to --Schema filter')
+            continue
+        # DIR/TABLE/public/users.sql
+        for _objectfile in _schemadir.glob('*.sql'):
+            _name = _objectfile.stem
+            if ARGS.Object and not re.search(ARGS.Object, _name):
+                debug(f'Ignoring {_objectfile} due to --Object filter')
+                continue
+            debug(f'Going to read {_objectfile}', 'INFO')
+            if db_execute_file(conn, _objectfile):
+                _count += 1
+            else:
+                debug(f'Failed to execute {_objectfile}', 'ERROR')
+
+    return _count or None
+
+
+def is_expected_ddl(_text):
+    """Try to verify if given text looks like SQL DDL.
+    """
+    try:
+        _text = _text.decode()
+    except (UnicodeDecodeError, AttributeError):
+        pass
+    if re.match('(CREATE|ALTER TABLE) ', _text):
+        return True
+    else:
+        return False
+
+
+def db_execute_file(conn, _file):
+    """Execute contents of given file in database.
+
+    Return 1 on success, 0 on failure.
+
+    File content is only minimally validated: check if first line begins with
+    relevant SQL keyword, ie. CREATE or ALTER.
+    """
+    _text = _file.read_text()
+    if not is_expected_ddl(_text):
+        debug(f'Unexpected content in {_file}', 'ERROR')
+        return 0
+    with conn.cursor() as cur:
+        # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
+        cur.execute('BEGIN')
+        cur.execute(_text)
+        _status = cur.statusmessage
+        if not is_expected_ddl(_status):
+            raise UserWarning(f'Aborting transaction due to unexpected status message "{_status}" while executing "{_file}"')
+        cur.execute('COMMIT')
+    return 1
 
 
 def debug(message, level='DEBUG', stream=sys.stdout):
@@ -474,7 +584,7 @@ def debug(message, level='DEBUG', stream=sys.stdout):
     stream.flush()
 
 
-def pgconn(dsn='', autocommit=True):
+def pgconn(dsn='', autocommit=False):
     """Get PostgreSQL connection.
 
     Gets a new connection and sets application_name in the session.
@@ -488,10 +598,12 @@ def pgconn(dsn='', autocommit=True):
     conn = psycopg2.connect(dsn)
     conn.autocommit = autocommit
     with conn.cursor() as cur:
+        cur.execute("SET application_name = %s", (PROGNAME,))
         # revert to standard search path to avoid side effects with
         # pg_get_indexdef and friends.
         cur.execute("SET search_path to public")
-        cur.execute("SET application_name = %s", (PROGNAME,))
+        # avoid function validation on implode
+        cur.execute("SET check_function_bodies TO off")
     return conn
 
 

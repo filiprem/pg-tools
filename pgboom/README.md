@@ -32,38 +32,40 @@ Synopsis
     --dry-run             Simulation mode (avoid any side effects)
 
 
-Example
+Examples
 -------
 
+Explode all objects from database into directory:
 ```
 $ pgboom explode 'host=localhost port=5432 dbname=test' /tmp/test --debug
-2020-04-14 20:50:17 DEBUG main Testing database connection for metadata import
-2020-04-14 20:50:17 DEBUG main Connection OK, user=filip, db=test, version=PostgreSQL 12.2 (Ubuntu 12.2-2.pgdg18.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.4.0-1ubuntu1~18.04.1) 7.4.0, 64-bit
-2020-04-14 20:50:17 INFO import_class importing VIEW definitions
-2020-04-14 20:50:17 INFO import_class importing FUNCTION definitions
-2020-04-14 20:50:17 INFO import_class importing TABLE definitions
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/TABLE/public/pgbench_accounts.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/TABLE/public/pgbench_branches.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/TABLE/public/pgbench_history.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/TABLE/public/pgbench_tellers.sql
-2020-04-14 20:50:17 INFO import_class importing INDEX definitions
-2020-04-14 20:50:17 INFO import_class importing CONSTRAINT definitions
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_accounts_pkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_branches_pkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
-2020-04-14 20:50:17 DEBUG import_class going to save /tmp/test/CONSTRAINT/public/pgbench_tellers_pkey.sql
-2020-04-14 20:50:17 INFO explode Finished importing objects to /tmp/test. Stats: {'VIEW': 0, 'FUNCTION': 0, 'TABLE': 4, 'INDEX': 0, 'CONSTRAINT': 8}
+2020-04-14 20:50:17 INFO explode_class exploding VIEW definitions
+2020-04-14 20:50:17 INFO explode_class exploding FUNCTION definitions
+2020-04-14 20:50:17 INFO explode_class exploding TABLE definitions
+2020-04-14 20:50:17 INFO explode_class exploding INDEX definitions
+2020-04-14 20:50:17 INFO explode_class exploding CONSTRAINT definitions
+2020-04-14 20:50:17 INFO explode Finished exploding database into /tmp/test. Stats: {'VIEW': None, 'FUNCTION': None, 'TABLE': 4, 'INDEX': None, 'CONSTRAINT': 8}
+```
+
+Implode directory into database, filtering by schema and object name:
+```
+pgboom implode 'host=localhost port=5432 dbname=dl' /tmp/dl --Class FUNCTION --Schema dl --Object '^getrecursivecolumns\b'
+2020-04-15 18:25:22 INFO implode_class Going to read /tmp/dl/FUNCTION/dl/getrecursivecolumns(varchar,text,int4,bool).sql
+2020-04-15 18:25:22 INFO implode Finished imploding /tmp/dl into database. Stats: {'FUNCTION': 1}
 ```
 
 Known issues
 ------------
 
-* The "implode" action is not (yet) supported. Obviously, it's a lot more complex than "explode".
-* Not all object properties are reflected on export. For example, `LEAKPROOF` attribute for functions.
+* Not all object types are supported.
+
+* PostgreSQL versions older than 11 are not supported.
+
+* WARNING! On "implode", file content is not validated. It is your responsibility to use trusted data source.
+
+* WARNING! On "implode", there is almost no SQL validation and if there are multiple statements in a file, they will all be executed.
+
+* Not all object properties are reflected on explode. For example, `LEAKPROOF` attribute for functions is not exploded.
+
 * Schema / object names are not always properly quoted. This applies to VIEWs and maybe more.
 
 
