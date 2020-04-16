@@ -279,7 +279,7 @@ def gettabledef(conn, taboid):
     ...    ''')
     >>> pgcurs.execute("SELECT 'gettabledef_testing'::regclass::oid")
     >>> temptableoid = pgcurs.fetchone()[0]
-    >>> gettabledef(pg, temptableoid) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+    >>> print(gettabledef(pg, temptableoid)) # doctest: +ELLIPSIS
     CREATE TEMP TABLE pg_temp_....gettabledef_testing (
         intcol integer,
         textcol text DEFAULT 'footext'::text
