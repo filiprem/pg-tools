@@ -51,6 +51,22 @@ METADATAOBJECTS = {
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
     },
+    'SEQUENCE': {
+        'list': """
+        SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'S'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        """,
+        'create': """
+        SELECT format('CREATE SEQUENCE %I.%I AS %s INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
+            n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
+            sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
+            sp.cache_size, case when sp.cycle_option then ' CYCLE' else '' end)
+        FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(__OID__) sp
+        WHERE c.oid = __OID__ AND n.oid = c.relnamespace
+        """
+    },
     'TABLE': {
         'list': """
         SELECT n.nspname, c.relname AS objname, c.oid
