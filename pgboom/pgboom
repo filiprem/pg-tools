@@ -25,6 +25,19 @@ ARGS = None
 # * full schema names must be included.
 # * 'create' query must include trailing semicolon.
 METADATAOBJECTS = {
+    'SCHEMA': {
+        'list': """
+        SELECT n.nspname, n.nspname AS objname, n.oid
+        FROM pg_catalog.pg_namespace n
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '^pg_temp'
+        AND n.nspname !~ '^pg_toast'
+        """,
+        'create': """SELECT pg_catalog.format('CREATE SCHEMA IF NOT EXISTS %I;', n.nspname)
+        FROM pg_catalog.pg_namespace n
+        WHERE n.oid = __OID__
+        """,
+    },
     'FUNCTION': {  # all functions except aggregate
         'list': """
         SELECT n.nspname, p.proname || '(' ||
