@@ -246,16 +246,28 @@ def getaggdef(conn, aggoid):
 
     Credits for SQL go to Erwin Brandstetter
     [https://stackoverflow.com/a/48575430/540341].
+
+    >>> pg = pgconn('')
+    >>> pgcur = pg.cursor()
+    >>> pgcur.execute('''CREATE AGGREGATE _testagg (float8) (
+    ...    sfunc = float8_accum, stype = float8[],
+    ...    finalfunc = float8_avg, initcond = '{0,0,0}'
+    ... )''')
+    >>> pgcur.execute("SELECT '_testagg(float8)'::regprocedure::oid")
+    >>> tempaggoid = pgcur.fetchone()[0]
+    >>> print(getaggdef(pg, tempaggoid))
+    CREATE AGGREGATE _testagg(double precision) (SFUNC = float8_accum, STYPE = double precision[], INITCOND = {0,0,0}, FINALFUNC = float8_avg);
+    >>> pgcur.execute('''DROP AGGREGATE _testagg (float8)''')
     """
 
     aggdefsql = """
-SELECT format('CREATE AGGREGATE %%s (SFUNC = %%s, STYPE = %%s%%s%%s%%s%%s)'
+SELECT format('CREATE AGGREGATE %%s (SFUNC = %%s, STYPE = %%s%%s%%s%%s%%s);'
     , aggfnoid::regprocedure
     , aggtransfn
     , aggtranstype::regtype
     , ', SORTOP = '    || NULLIF(aggsortop, 0)::regoper
     , ', INITCOND = '  || agginitval
-    , ', FINALFUNC = ' || NULLIF(aggfinalfn, 0)
+    , ', FINALFUNC = ' || NULLIF(aggfinalfn, 0)::regproc
     , CASE WHEN aggfinalextra THEN ', FINALFUNC_EXTRA' END
 ) AS ddl_agg
 FROM pg_aggregate
@@ -272,13 +284,13 @@ def gettabledef(conn, taboid):
         Generate CREATE TABLE statement for given table.
 
     >>> pg = pgconn('')
-    >>> pgcurs = pg.cursor()
-    >>> pgcurs.execute('''CREATE TEMP TABLE gettabledef_testing (
+    >>> pgcur = pg.cursor()
+    >>> pgcur.execute('''CREATE TEMP TABLE gettabledef_testing (
     ...    intcol integer,
     ...    textcol text DEFAULT 'footext')
     ...    ''')
-    >>> pgcurs.execute("SELECT 'gettabledef_testing'::regclass::oid")
-    >>> temptableoid = pgcurs.fetchone()[0]
+    >>> pgcur.execute("SELECT 'gettabledef_testing'::regclass::oid")
+    >>> temptableoid = pgcur.fetchone()[0]
     >>> print(gettabledef(pg, temptableoid)) # doctest: +ELLIPSIS
     CREATE TEMP TABLE pg_temp_....gettabledef_testing (
         intcol integer,
@@ -619,9 +631,9 @@ def pgconn(dsn='', autocommit=False):
     Gets a new connection and sets application_name in the session.
 
     >>> pg = pgconn('')
-    >>> pgcurs = pg.cursor()
-    >>> pgcurs.execute('SELECT 2+3')
-    >>> pgcurs.fetchone()
+    >>> pgcur = pg.cursor()
+    >>> pgcur.execute('SELECT 2+3')
+    >>> pgcur.fetchone()
     (5,)
     """
     conn = psycopg2.connect(dsn)
