@@ -152,14 +152,14 @@ def main():
     global ARGS
     ARGS = parser.parse_args()
 
-    if ARGS.dry_run:
-        debug('Running in simulation mode', 'INFO')
-
     if ARGS.test:
         debug("Entering test code", 'INFO')
         import doctest
         doctest.testmod(verbose=ARGS.debug)
         sys.exit(0)
+
+    if ARGS.dry_run:
+        debug('Running in simulation mode', 'INFO')
 
     debug("Testing database connection")
     try:
@@ -453,6 +453,11 @@ def make_where():
     Return a tuple with two items:
         1. SQL WHERE string with %s-style placeholders
         2. list of parameters for the placeholders.
+
+    >>> ARGS.Schema = '^myschema$'
+    >>> ARGS.Object = '^myobjectprefix'
+    >>> print(make_where())
+    (' WHERE nspname ~ %s AND objname ~ %s', ['^myschema$', '^myobjectprefix'])
     """
     conditions = []
     params = []
@@ -598,6 +603,16 @@ def db_execute_file(conn, _file):
 
 def debug(message, level='DEBUG', stream=sys.stdout):
     """Emit a debug message.
+
+    Some doctest notes:
+        1. Need to specify stream, because doctest hijacks stdout before running.
+        2. Due to leading '2' the test will start failing in year 3000.
+        Hopefully, nobody will care then.
+
+    >>> debug('elen silva lumen omentielvo', 'INFO', stream=sys.stdout) # doctest: +ELLIPSIS
+    2... INFO ... elen silva lumen omentielvo
+    >>> ARGS.debug = False
+    >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
     """
 
     levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0, }
