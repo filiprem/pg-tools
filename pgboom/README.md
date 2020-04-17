@@ -10,19 +10,25 @@ Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAM
 Synopsis
 --------
 
-    usage: pgboom [-h] [--Class {VIEW,FUNCTION,TABLE,INDEX,CONSTRAINT}]
+    usage: pgboom [-h]
+                [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
                 [--Schema SCHEMA] [--Object OBJECT] [--test] [--debug]
                 [--dry-run]
-                ACTION DSN DIR
+                {explode,implode,test} DSN DIR
+
+    Utility to extract object metadata (ie., database schema) from PostgreSQL
+    database to directory structure, and vice versa. Each db object goes into
+    separate file: `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
 
     positional arguments:
-    ACTION                Action (explode/implode)
+    {explode,implode,test}
+                            Action to perform
     DSN                   PostgreSQL data source in 'key=value' format
     DIR                   Destination/source directory
 
     optional arguments:
     -h, --help            show this help message and exit
-    --Class {VIEW,FUNCTION,TABLE,INDEX,CONSTRAINT}, -C {VIEW,FUNCTION,TABLE,INDEX,CONSTRAINT}
+    --Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}
                             Type of objects to extract/load
     --Schema SCHEMA, -S SCHEMA
                             Database schema name filter
@@ -51,8 +57,15 @@ $ pgboom explode 'host=localhost port=5432 dbname=test' /tmp/test --debug
 Implode directory into database, filtering by schema and object name:
 ```
 pgboom implode 'host=localhost port=5432 dbname=dl' /tmp/dl --Class FUNCTION --Schema dl --Object '^getrecursivecolumns\b'
-2020-04-15 18:25:22 INFO implode_class Going to read /tmp/dl/FUNCTION/dl/getrecursivecolumns(varchar,text,int4,bool).sql
+2020-04-15 18:25:22 INFO implode_class Going to execute /tmp/dl/FUNCTION/dl/getrecursivecolumns(varchar,text,int4,bool).sql
 2020-04-15 18:25:22 INFO implode Finished imploding /tmp/dl into database. Stats: {'FUNCTION': 1}
+```
+
+Run a built-in test:
+```
+pgboom test 'dbname=test' /tmp/test
+2020-04-17 18:12:47 INFO main Entering test code. Please ignore ERROR messages, unless you see specific tests failing.
+2020-04-17 18:12:47 ERROR db_execute_ddl_file Unexpected content in "/tmp/tmplwv50dam.sql"
 ```
 
 
