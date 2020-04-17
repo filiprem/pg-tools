@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 
+"""The pgboom utility manipulates Postgres metadata.
+
+For details, use `--help` or consult project README, available at
+https://github.com/filiprem/pg-tools/blob/master/pgboom/README.md
+"""
+
 import sys
 import re
 import argparse
-import psycopg2
+import doctest
+import inspect
 from time import localtime, strftime
 from pathlib import Path
+
+import psycopg2
 
 
 PROGNAME = 'pgboom'
@@ -14,8 +23,8 @@ PROGDESC = """
 Utility to extract object metadata (ie., database schema) from PostgreSQL
 database to directory structure, and vice versa.
 
-Each db object goes into separate file, DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql
-
+Each db object goes into separate file:
+    `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
 """
 
 ARGS = None
@@ -103,7 +112,8 @@ METADATAOBJECTS = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
-            '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__', pg_get_constraintdef(__OID__, true))"""
+            '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
+            pg_get_constraintdef(__OID__, true))"""
     },
     'INDEX': {
         'list': """
@@ -133,7 +143,8 @@ def main():
     parser = argparse.ArgumentParser(description=PROGDESC)
 
     # positional arguments: ACTION DSN DIR
-    parser.add_argument('ACTION', help="Action (explode/implode)")
+    parser.add_argument('ACTION', choices=('explode', 'implode', 'test'),
+                        help="Action to perform")
     parser.add_argument(
         'DSN', help="PostgreSQL data source in 'key=value' format")
     parser.add_argument('DIR', help="Destination/source directory")
@@ -152,9 +163,9 @@ def main():
     global ARGS
     ARGS = parser.parse_args()
 
-    if ARGS.test:
-        debug("Entering test code", 'INFO')
-        import doctest
+    if ARGS.test or ARGS.ACTION == 'test':
+        debug("Entering test code. Please ignore ERROR messages, "
+              "unless you see specific tests failing.", 'INFO')
         doctest.testmod(verbose=ARGS.debug)
         sys.exit(0)
 
@@ -194,16 +205,16 @@ def explode(conn):
         debug("could not access output directory {}".format(ARGS.DIR), 'ERROR')
         raise
 
-    _counter = {}
+    counter = {}
 
     for objclass in METADATAOBJECTS:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        _count = explode_class(conn, objclass)
-        _counter[objclass] = _count
+        count = explode_class(conn, objclass)
+        counter[objclass] = count
 
     debug('Finished exploding database into {}. Stats: {}'.format(
-        ARGS.DIR, _counter), 'INFO')
+        ARGS.DIR, counter), 'INFO')
 
 
 def implode(conn):
@@ -224,21 +235,22 @@ def implode(conn):
         /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
         /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
     """
-    _root = Path(ARGS.DIR)
-    if not (_root.exists() and _root.is_dir()):
+    root = Path(ARGS.DIR)
+    if not (root.exists() and root.is_dir()):
+        debug('Directory {ARGS.DIR} does not exist', 'ERROR')
         debug(f'Directory {ARGS.DIR} does not exist', 'ERROR')
         sys.exit(1)
 
-    _counter = {}
+    counter = {}
 
     for objclass in METADATAOBJECTS:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        _count = implode_class(conn, objclass)
-        _counter[objclass] = _count
+        count = implode_class(conn, objclass)
+        counter[objclass] = count
 
     debug('Finished imploding {} into database. Stats: {}'.format(
-        ARGS.DIR, _counter), 'INFO')
+        ARGS.DIR, counter), 'INFO')
 
 
 def getaggdef(conn, aggoid):
@@ -256,17 +268,19 @@ def getaggdef(conn, aggoid):
     >>> pgcur.execute("SELECT '_testagg(float8)'::regprocedure::oid")
     >>> tempaggoid = pgcur.fetchone()[0]
     >>> print(getaggdef(pg, tempaggoid))
-    CREATE AGGREGATE _testagg(double precision) (SFUNC = float8_accum, STYPE = double precision[], INITCOND = {0,0,0}, FINALFUNC = float8_avg);
+    CREATE AGGREGATE _testagg(double precision) (
+        SFUNC = float8_accum, STYPE = double precision[],
+        INITCOND = {0,0,0}, FINALFUNC = float8_avg);
     >>> pgcur.execute('''DROP AGGREGATE _testagg (float8)''')
     """
 
     aggdefsql = """
-SELECT format('CREATE AGGREGATE %%s (SFUNC = %%s, STYPE = %%s%%s%%s%%s%%s);'
+SELECT format(E'CREATE AGGREGATE %%s (\n    SFUNC = %%s, STYPE = %%s%%s%%s%%s%%s);'
     , aggfnoid::regprocedure
     , aggtransfn
     , aggtranstype::regtype
     , ', SORTOP = '    || NULLIF(aggsortop, 0)::regoper
-    , ', INITCOND = '  || agginitval
+    , E',\n    INITCOND = '  || agginitval
     , ', FINALFUNC = ' || NULLIF(aggfinalfn, 0)::regproc
     , CASE WHEN aggfinalextra THEN ', FINALFUNC_EXTRA' END
 ) AS ddl_agg
@@ -478,7 +492,7 @@ def explode_class(conn, objclass):
 
     Return counter.
     """
-    _count = 0
+    count = 0
     objsql = METADATAOBJECTS.get(objclass)
     if objsql is None:
         raise ValueError(f'Object class {objclass} not supported')
@@ -486,11 +500,11 @@ def explode_class(conn, objclass):
     debug(f'exploding {objclass} definitions', 'INFO')
 
     with conn.cursor() as cur:
-        _sqlselect = objsql['list']
-        _sqlfilter, _sqlparams = make_where()
-        _sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
-            _sqlselect, _sqlfilter)
-        cur.execute(_sqlquery, _sqlparams)
+        sqlselect = objsql['list']
+        sqlfilter, sqlparams = make_where()
+        sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
+            sqlselect, sqlfilter)
+        cur.execute(sqlquery, sqlparams)
         for r in cur:
             if objclass == 'CONSTRAINT':
                 (nspname, objname, oid, conrelnspname, conrelname) = r
@@ -516,7 +530,7 @@ def explode_class(conn, objclass):
                     cur2.execute(objgen)
                     res = cur2.fetchone()[0]
 
-                _count += 1
+                count += 1
 
                 debug(f'going to save {fdir}/{fname}')
                 if not ARGS.dry_run:
@@ -524,7 +538,7 @@ def explode_class(conn, objclass):
                     with open(f'{fdir}/{fname}', 'w') as of:
                         of.write(res)
 
-    return _count or None
+    return count or None
 
 
 def implode_class(conn, objclass):
@@ -535,74 +549,99 @@ def implode_class(conn, objclass):
         dependencies?
     """
     # DIR/TABLE
-    _dir = Path(ARGS.DIR, objclass)
-    if not (_dir.exists() and _dir.is_dir()):
-        debug(f'Directory {_dir} does not exist', 'INFO')
+    given_dir = Path(ARGS.DIR, objclass)
+    if not (given_dir.exists() and given_dir.is_dir()):
+        debug(f'Directory {given_dir} does not exist', 'INFO')
         return None
 
-    _count = 0
+    count = 0
 
     # DIR/TABLE/public
-    for _schemadir in _dir.iterdir():
-        if not _schemadir.is_dir():
+    for schema_dir in given_dir.iterdir():
+        if not schema_dir.is_dir():
             continue
-        _schema = _schemadir.name
-        if ARGS.Schema and not re.search(ARGS.Schema, _schema):
-            debug(f'Ignoring {_schemadir} due to --Schema filter')
+        schema = schema_dir.name
+        if ARGS.Schema and not re.search(ARGS.Schema, schema):
+            debug(f'Ignoring {schema_dir} due to --Schema filter')
             continue
         # DIR/TABLE/public/users.sql
-        for _objectfile in _schemadir.glob('*.sql'):
-            _name = _objectfile.stem
-            if ARGS.Object and not re.search(ARGS.Object, _name):
-                debug(f'Ignoring {_objectfile} due to --Object filter')
+        for objectfile in schema_dir.glob('*.sql'):
+            name = objectfile.stem
+            if ARGS.Object and not re.search(ARGS.Object, name):
+                debug(f'Ignoring {objectfile} due to --Object filter')
                 continue
-            debug(f'Going to read {_objectfile}', 'INFO')
-            if db_execute_file(conn, _objectfile):
-                _count += 1
+            debug(f'Going to read {objectfile}', 'INFO')
+            if db_execute_ddl_file(conn, objectfile):
+                count += 1
             else:
-                debug(f'Failed to execute {_objectfile}', 'ERROR')
+                debug(f'Failed to execute {objectfile}', 'ERROR')
 
-    return _count or None
+    return count or None
 
 
-def is_expected_ddl(_text):
+def is_expected_ddl(text):
     """Try to verify if given text looks like SQL DDL.
     """
     try:
-        _text = _text.decode()
+        text = text.decode()
     except (UnicodeDecodeError, AttributeError):
         pass
-    if re.match('(CREATE|ALTER TABLE) ', _text):
-        return True
-    else:
-        return False
+
+    return bool(re.match('(CREATE|ALTER TABLE) ', text))
 
 
-def db_execute_file(conn, _file):
-    """Execute contents of given file in database.
-
-    Return 1 on success, 0 on failure.
+def db_execute_ddl_file(conn, filename) -> int:
+    """Executes DDL from given file in database.
 
     File content is only minimally validated: check if first line begins with
     relevant SQL keyword, ie. CREATE or ALTER.
+
+    Args:
+        conn: postgres db connection
+        filename: path of file to be executed
+
+    Returns:
+        1 on success, 0 on failure.
+
+    >>> pg = pgconn('')
+    >>> import tempfile
+    >>> tmp1 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
+    >>> tmp1.write('SELECT 1;'.encode())
+    9
+    >>> # Expecting failure:
+    >>> db_execute_ddl_file(pg, tmp1.name)
+    0
+    >>> tmp2 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
+    >>> tmp2.write('CREATE TEMP TABLE _testtable (id integer);'.encode())
+    42
+    >>> # Expecting success:
+    >>> db_execute_ddl_file(pg, tmp2.name)
+    1
     """
-    _text = _file.read_text()
-    if not is_expected_ddl(_text):
-        debug(f'Unexpected content in {_file}', 'ERROR')
+
+    file = Path(filename)
+
+    text = file.read_text()
+    if not is_expected_ddl(text):
+        debug(f'Unexpected content in "{file}"', 'ERROR')
+        debug(f'Unexpected content: {text}', 'DEBUG')
         return 0
     with conn.cursor() as cur:
         # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
         cur.execute('BEGIN')
-        cur.execute(_text)
-        _status = cur.statusmessage
-        if not is_expected_ddl(_status):
-            raise UserWarning(f'Aborting transaction due to unexpected status message "{_status}" while executing "{_file}"')
+        cur.execute(text)
+        status = cur.statusmessage
+        if not is_expected_ddl(status):
+            raise UserWarning(f'Aborting transaction due to "{status}" while executing "{file}"')
         cur.execute('COMMIT')
     return 1
 
 
 def debug(message, level='DEBUG', stream=sys.stdout):
     """Emit a debug message.
+
+    Args:
+        message: message text.
 
     Some doctest notes:
         1. Need to specify stream, because doctest hijacks stdout before running.
@@ -615,7 +654,7 @@ def debug(message, level='DEBUG', stream=sys.stdout):
     >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
     """
 
-    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0, }
+    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0}
     if levels.get(level) is None:
         raise ValueError('wrong value for debug level: {}'.format(level))
 
@@ -626,17 +665,11 @@ def debug(message, level='DEBUG', stream=sys.stdout):
     if levels.get(level) < emit_level:
         return
 
-    try:
-        caller = sys._getframe().f_back.f_code.co_name
-    except Exception:
-        caller = '(direct)'
+    caller = inspect.stack()[1][3]
+
     ts = strftime("%F %X", localtime())
-    stream.write(
-        '{ts} {level} {caller} {message}\n'.format(
-            level=level,
-            message=message,
-            caller=caller,
-            ts=ts))
+
+    stream.write(f'{ts} {level} {caller} {message}\n')
     stream.flush()
 
 
