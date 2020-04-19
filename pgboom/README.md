@@ -4,90 +4,117 @@ pgboom
 Utility to extract object metadata (ie., database schema) from PostgreSQL
 database to directory of flat SQL files, and vice versa.
 
-Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`
+Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
 
-Example directory representing a pgbench database initialized with
-`pgbench -i --foreign-keys`:
-
-    /tmp/test/TABLE/public/pgbench_tellers.sql
-    /tmp/test/TABLE/public/pgbench_history.sql
-    /tmp/test/TABLE/public/pgbench_branches.sql
-    /tmp/test/TABLE/public/pgbench_accounts.sql
-    /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_accounts_pkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_tellers_pkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_branches_pkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
-    /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
+Example directory representing a pgbench database initialized with `pgbench -i --foreign-keys`:
+```
+/tmp/test/TABLE/public/pgbench_tellers.sql
+/tmp/test/TABLE/public/pgbench_history.sql
+/tmp/test/TABLE/public/pgbench_branches.sql
+/tmp/test/TABLE/public/pgbench_accounts.sql
+/tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_accounts_pkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_tellers_pkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_branches_pkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
+/tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
+```
 
 Synopsis
 --------
 
-    usage: pgboom [-h]
-                [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
-                [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--test]
-                [--debug] [--dry-run]
-                {explode,implode,cat,test} DSN DIR
+```
+usage: pgboom [-h]
+            [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
+            [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--test]
+            [--debug] [--dry-run]
+            {explode,implode,cat,test} DSN DIR
 
-    Utility to extract object metadata (ie., database schema) from PostgreSQL
-    database to directory structure, and vice versa. Each db object goes into
-    separate file: `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
+Utility to extract object metadata (ie., database schema) from PostgreSQL
+database to directory structure, and vice versa. Each db object goes into
+separate file: `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
 
-    positional arguments:
-    {explode,implode,cat,test}
-                            Action to perform. * "explode" will save object
-                            definitions from database to directory. * "implode"
-                            will do the opposite of "explode" (but will not
-                            overwrite any pre-existing objects). * "cat" will do
-                            the same as "implode", but write into --File, not
-                            database. * "test" will run a built-in test (for
-                            devs).
-    DSN                   PostgreSQL data source in 'key=value' format
-    DIR                   Destination/source directory
+positional arguments:
+{explode,implode,cat,test}
+                        Action to perform. * "explode" will save object
+                        definitions from database to directory. * "implode"
+                        will do the opposite of "explode" (but will not
+                        overwrite any pre-existing objects). * "cat" will do
+                        the same as "implode", but write into --File, not
+                        database. * "test" will run a built-in test (for
+                        devs).
+DSN                   PostgreSQL data source in 'key=value' format
+DIR                   Destination/source directory
 
-    optional arguments:
-    -h, --help            show this help message and exit
-    --Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}
-                            Type of objects to extract/load
-    --Schema SCHEMA, -S SCHEMA
-                            Database schema name filter
-    --Object OBJECT, -O OBJECT
-                            Database object name filter
-    --File FILE, -F FILE  Output file for the "cat" action
-    --test                Perform built-in test
-    --debug, --verbose, -v
-                            Set verbose debugging on
-    --dry-run             Simulation mode (avoid any side effects)
-
+optional arguments:
+-h, --help            show this help message and exit
+--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}
+                        Type of objects to extract/load
+--Schema SCHEMA, -S SCHEMA
+                        Database schema name filter
+--Object OBJECT, -O OBJECT
+                        Database object name filter
+--File FILE, -F FILE  Output file for the "cat" action
+--test                Perform built-in test
+--debug, --verbose, -v
+                        Set verbose debugging on
+--dry-run             Simulation mode (avoid any side effects)
+```
 
 Examples
--------
+--------
 
-Explode all objects from database into directory:
+Export all objects from database into directory:
 ```
-$ pgboom explode 'host=localhost port=5432 dbname=test' /tmp/test --debug
-2020-04-14 20:50:17 INFO explode_class exploding VIEW definitions
-2020-04-14 20:50:17 INFO explode_class exploding FUNCTION definitions
-2020-04-14 20:50:17 INFO explode_class exploding TABLE definitions
-2020-04-14 20:50:17 INFO explode_class exploding INDEX definitions
-2020-04-14 20:50:17 INFO explode_class exploding CONSTRAINT definitions
-2020-04-14 20:50:17 INFO explode Finished exploding database into /tmp/test. Stats: {'VIEW': None, 'FUNCTION': None, 'TABLE': 4, 'INDEX': None, 'CONSTRAINT': 8}
+$ pgboom explode 'host=localhost port=5432 dbname=test' /tmp/test
+2020-04-19 16:30:42 INFO explode_class processing SCHEMA definitions
+2020-04-19 16:30:42 INFO explode_class processing FUNCTION definitions
+2020-04-19 16:30:42 INFO explode_class processing AGGREGATE definitions
+2020-04-19 16:30:42 INFO explode_class processing SEQUENCE definitions
+2020-04-19 16:30:42 INFO explode_class processing TABLE definitions
+2020-04-19 16:30:42 INFO explode_class processing CONSTRAINT definitions
+2020-04-19 16:30:42 INFO explode_class processing INDEX definitions
+2020-04-19 16:30:42 INFO explode_class processing VIEW definitions
+2020-04-19 16:30:42 INFO explode finished, stats: {'SCHEMA': 1, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': None, 'TABLE': 4, 'CONSTRAINT': 8, 'INDEX': None, 'VIEW': None}
 ```
 
-Implode directory into database, filtering by schema and object name:
+Import directory into database, filtering by schema and object name:
 ```
-pgboom implode 'host=localhost port=5432 dbname=dl' /tmp/dl --Class FUNCTION --Schema dl --Object '^getrecursivecolumns\b'
-2020-04-15 18:25:22 INFO implode_class Going to execute /tmp/dl/FUNCTION/dl/getrecursivecolumns(varchar,text,int4,bool).sql
-2020-04-15 18:25:22 INFO implode Finished imploding /tmp/dl into database. Stats: {'FUNCTION': 1}
+$ pgboom implode 'dbname=test' /tmp/test --Class TABLE --Schema public --Object '^pgbench' --dry-run --debug
+2020-04-19 16:28:07 DEBUG main pgboom implode starting
+2020-04-19 16:28:07 INFO main running in simulation mode
+2020-04-19 16:28:07 DEBUG main testing database connection
+2020-04-19 16:28:07 DEBUG main connection OK: user=filip, db=test, version=PostgreSQL 12.2 (Ubuntu 12.2-2.pgdg18.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.4.0-1ubuntu1~18.04.1) 7.4.0, 64-bit
+2020-04-19 16:28:07 INFO implode_class processing TABLE definitions
+2020-04-19 16:28:07 DEBUG implode_class processing /tmp/test/TABLE/public/pgbench_tellers.sql
+2020-04-19 16:28:07 DEBUG implode_class processing /tmp/test/TABLE/public/pgbench_history.sql
+2020-04-19 16:28:07 DEBUG implode_class processing /tmp/test/TABLE/public/pgbench_branches.sql
+2020-04-19 16:28:07 DEBUG implode_class processing /tmp/test/TABLE/public/pgbench_accounts.sql
+2020-04-19 16:28:07 INFO implode finished, stats: {'TABLE': None}
+2020-04-19 16:28:07 DEBUG main pgboom implode finished
+```
+
+Concatenate SQL files created with `pgboom explode` into sigle SQL file:
+```
+$ pgboom cat '' /tmp/dl --File /tmp/dl.txt
+2020-04-19 16:14:44 INFO implode_class processing SCHEMA definitions
+2020-04-19 16:14:44 INFO implode_class processing FUNCTION definitions
+2020-04-19 16:14:44 INFO implode_class directory /tmp/dl/AGGREGATE does not exist
+2020-04-19 16:14:44 INFO implode_class processing SEQUENCE definitions
+2020-04-19 16:14:44 INFO implode_class processing TABLE definitions
+2020-04-19 16:14:44 INFO implode_class processing CONSTRAINT definitions
+2020-04-19 16:14:44 INFO implode_class processing INDEX definitions
+2020-04-19 16:14:44 INFO implode_class processing VIEW definitions
+2020-04-19 16:14:44 INFO implode finished, stats: {'SCHEMA': 2, 'FUNCTION': 75, 'AGGREGATE': None, 'SEQUENCE': 10, 'TABLE': 42, 'CONSTRAINT': 5, 'INDEX': 94, 'VIEW': 9}
 ```
 
 Run a built-in test:
 ```
-pgboom test 'dbname=test' /tmp/test
-2020-04-17 18:12:47 INFO main Entering test code. Please ignore ERROR messages, unless you see specific tests failing.
-2020-04-17 18:12:47 ERROR db_execute_ddl_file Unexpected content in "/tmp/tmplwv50dam.sql"
+$ pgboom test 'dbname=test' /tmp/test
+2020-04-19 16:31:32 INFO main entering test code - please ignore ERROR messages unless you see specific tests failing
+2020-04-19 16:31:32 ERROR db_execute_ddl_file unexpected content in "/tmp/tmpd9d_wvzs.sql"
 ```
 
 
