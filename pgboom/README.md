@@ -8,6 +8,7 @@ Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAM
 
 Example directory representing a pgbench database initialized with
 `pgbench -i --foreign-keys`:
+
     /tmp/test/TABLE/public/pgbench_tellers.sql
     /tmp/test/TABLE/public/pgbench_history.sql
     /tmp/test/TABLE/public/pgbench_branches.sql
