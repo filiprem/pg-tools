@@ -15,6 +15,7 @@ from time import localtime, strftime
 from pathlib import Path
 
 import psycopg2
+import psycopg2.errorcodes
 
 
 PROGNAME = 'pgboom'
@@ -42,7 +43,7 @@ METADATAOBJECTS = {
         AND n.nspname !~ '^pg_temp'
         AND n.nspname !~ '^pg_toast'
         """,
-        'create': """SELECT pg_catalog.format('CREATE SCHEMA IF NOT EXISTS %I;', n.nspname)
+        'create': """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
         FROM pg_catalog.pg_namespace n
         WHERE n.oid = __OID__
         """,
@@ -57,7 +58,8 @@ METADATAOBJECTS = {
         AND p.prokind <> 'a'
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
-        'create': """SELECT pg_get_functiondef(__OID__) || ';'"""
+        'create': """SELECT regexp_replace(pg_get_functiondef(__OID__),
+                 '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'"""
     },
     'AGGREGATE': {  # aggregate functions only
         'list': """
@@ -69,7 +71,7 @@ METADATAOBJECTS = {
         AND p.prokind = 'a'
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
-        # this is overriden later.
+        # this is overriden later (see getaggdef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
     },
@@ -81,7 +83,8 @@ METADATAOBJECTS = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
         'create': """
-        SELECT format('CREATE SEQUENCE %I.%I AS %s INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
+        SELECT format('CREATE SEQUENCE %I.%I AS %s '
+                'INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
             sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
             sp.cache_size, case when sp.cycle_option then ' CYCLE' else '' end)
@@ -96,7 +99,7 @@ METADATAOBJECTS = {
         WHERE n.oid = c.relnamespace AND c.relkind = 'r'
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
-        # this is overriden later.
+        # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_tabledef(__OID__) || ';'"""
     },
@@ -132,7 +135,7 @@ METADATAOBJECTS = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
         'create': """
-        SELECT E'CREATE OR REPLACE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
+        SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
         """
     },
 }
@@ -143,56 +146,86 @@ def main():
     parser = argparse.ArgumentParser(description=PROGDESC)
 
     # positional arguments: ACTION DSN DIR
-    parser.add_argument('ACTION', choices=('explode', 'implode', 'test'),
-                        help="Action to perform")
-    parser.add_argument(
-        'DSN', help="PostgreSQL data source in 'key=value' format")
+    actionhelp = """Action to perform.
+        * "explode" will save object definitions from database to directory.
+        * "implode" will do the opposite of "explode"
+          (but will not overwrite any pre-existing objects).
+        * "cat" will do the same as "implode", but write into --File, not database.
+        * "test" will run a built-in test (for devs)."""
+    parser.add_argument('ACTION', choices=('explode', 'implode', 'cat', 'test'), help=actionhelp)
+    parser.add_argument('DSN', help="PostgreSQL data source in 'key=value' format")
     parser.add_argument('DIR', help="Destination/source directory")
     # options
     parser.add_argument('--Class', '-C', choices=METADATAOBJECTS.keys(),
                         help="Type of objects to extract/load")
     parser.add_argument('--Schema', '-S', help="Database schema name filter")
     parser.add_argument('--Object', '-O', help="Database object name filter")
-    parser.add_argument('--test', action='store_true',
-                        help="Perform built-in test")
-    parser.add_argument('--debug', '--verbose', '-v',
-                        action='store_true', help="Set verbose debugging on")
+    parser.add_argument('--File', '-F', help='Output file for the "cat" action')
+    parser.add_argument('--test', action='store_true', help="Perform built-in test")
+    parser.add_argument('--debug', '--verbose', '-v', action='store_true',
+                        help="Set verbose debugging on")
     parser.add_argument('--dry-run', action='store_true',
                         help="Simulation mode (avoid any side effects)")
 
     global ARGS
     ARGS = parser.parse_args()
 
+    debug(f'pgboom {ARGS.ACTION} starting')
+
     if ARGS.test or ARGS.ACTION == 'test':
-        debug("Entering test code. Please ignore ERROR messages, "
-              "unless you see specific tests failing.", 'INFO')
+        debug("entering test code - please ignore ERROR messages "
+              "unless you see specific tests failing", 'INFO')
         doctest.testmod(verbose=ARGS.debug)
         sys.exit(0)
 
     if ARGS.dry_run:
-        debug('Running in simulation mode', 'INFO')
+        debug('running in simulation mode', 'INFO')
 
-    debug("Testing database connection")
-    try:
-        conn = pgconn(ARGS.DSN)
-    except BaseException:
-        debug("""Connection failed. You are supposed to provide connection parameters
-              via environment variables [PGHOST, PGDATABASE etc], as specified in
-              https://www.postgresql.org/docs/current/libpq-envars.html""",
-              'ERROR')
-        raise
+    conn = None
+    if ARGS.ACTION == 'explode' or ARGS.ACTION == 'implode':
+        debug("testing database connection")
+        try:
+            conn = pgconn(ARGS.DSN)
+        except BaseException:
+            debug("connection failed. You are supposed to provide connection"
+                  " parameters via environment variables [PGHOST, PGDATABASE etc],"
+                  " as specified in https://www.postgresql.org/docs/current/libpq-envars.html",
+                  'ERROR')
+            raise
 
-    with conn.cursor() as cur:
-        cur.execute('SELECT current_database(), current_user, version()')
-        (db, usr, ver) = cur.fetchone()
-        debug('Connection OK, user={}, db={}, version={}'.format(usr, db, ver))
+        with conn.cursor() as cur:
+            cur.execute('SELECT current_database(), current_user, version()')
+            (db, usr, ver) = cur.fetchone()
+            debug(f'connection OK: user={usr}, db={db}, version={ver}')
 
     if ARGS.ACTION == 'explode':
         explode(conn)
     elif ARGS.ACTION == 'implode':
         implode(conn)
+    elif ARGS.ACTION == 'cat':
+        if ARGS.File is None:
+            raise ValueError('The "cat" action requires --File option.')
+        try:
+            # overwrite the file
+            open(ARGS.File, mode='w').close()
+        except OSError as err:
+            debug(err, 'ERROR')
+            sys.exit(1)
+        cat()
     else:
         raise ValueError('Action not supported: ' + ARGS.ACTION)
+
+    debug(f'pgboom {ARGS.ACTION} finished')
+
+
+def cat():
+    """Concatenate files from DIR same way as "implode" would.
+
+    The output will go to a file specified by --File option.
+    """
+
+    # implemented as part of implode.
+    return implode(None)
 
 
 def explode(conn):
@@ -202,7 +235,7 @@ def explode(conn):
         if not ARGS.dry_run:
             Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
     except OSError:
-        debug("could not access output directory {}".format(ARGS.DIR), 'ERROR')
+        debug(f'could not access output directory {ARGS.DIR}', 'ERROR')
         raise
 
     counter = {}
@@ -213,32 +246,15 @@ def explode(conn):
         count = explode_class(conn, objclass)
         counter[objclass] = count
 
-    debug('Finished exploding database into {}. Stats: {}'.format(
-        ARGS.DIR, counter), 'INFO')
+    debug(f'finished, stats: {counter}', 'INFO')
 
 
 def implode(conn):
     """Get metadata from a directory into Postgres.
-
-    Example directory representing a pgbench database initialized with
-    `pgbench -i --foreign-keys`:
-        /tmp/test/TABLE/public/pgbench_tellers.sql
-        /tmp/test/TABLE/public/pgbench_history.sql
-        /tmp/test/TABLE/public/pgbench_branches.sql
-        /tmp/test/TABLE/public/pgbench_accounts.sql
-        /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_accounts_pkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_tellers_pkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_branches_pkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
-        /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
     """
     root = Path(ARGS.DIR)
     if not (root.exists() and root.is_dir()):
-        debug('Directory {ARGS.DIR} does not exist', 'ERROR')
-        debug(f'Directory {ARGS.DIR} does not exist', 'ERROR')
+        debug(f'directory {ARGS.DIR} does not exist', 'ERROR')
         sys.exit(1)
 
     counter = {}
@@ -249,11 +265,270 @@ def implode(conn):
         count = implode_class(conn, objclass)
         counter[objclass] = count
 
-    debug('Finished imploding {} into database. Stats: {}'.format(
-        ARGS.DIR, counter), 'INFO')
+    debug(f'finished, stats: {counter}', 'INFO')
 
 
-def getaggdef(conn, aggoid):
+def make_where():
+    """Construct a WHERE clause for object list filtering.
+
+    Return a tuple with two items:
+        1. SQL WHERE string with %s-style placeholders
+        2. list of parameters for the placeholders.
+
+    >>> ARGS.Schema = '^myschema$'
+    >>> ARGS.Object = '^myobjectprefix'
+    >>> print(make_where())
+    (' WHERE nspname ~ %s AND objname ~ %s', ['^myschema$', '^myobjectprefix'])
+    """
+    conditions = []
+    params = []
+    clause = ''
+    if ARGS.Schema is not None:
+        conditions.append('nspname ~ %s')
+        params.append(ARGS.Schema)
+    if ARGS.Object is not None:
+        conditions.append('objname ~ %s')
+        params.append(ARGS.Object)
+    if conditions:
+        clause = ' WHERE ' + ' AND '.join(conditions)
+    return (clause, params)
+
+
+def explode_class(conn, objclass):
+    """Extract objects of given class from database to flat files.
+
+    Return counter.
+    """
+    count = 0
+    objsql = METADATAOBJECTS.get(objclass)
+    if objsql is None:
+        raise ValueError(f'Object class {objclass} not supported')
+
+    debug(f'processing {objclass} definitions', 'INFO')
+
+    with conn.cursor() as cur:
+        sqlselect = objsql['list']
+        sqlfilter, sqlparams = make_where()
+        sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
+            sqlselect, sqlfilter)
+        cur.execute(sqlquery, sqlparams)
+        for r in cur:
+            if objclass == 'CONSTRAINT':
+                (nspname, objname, oid, conrelnspname, conrelname) = r
+            else:
+                (nspname, objname, oid) = r
+            fdir = f'{ARGS.DIR}/{objclass}/{nspname}'
+            fname = f'{objname}.sql'
+            with conn.cursor() as cur2:
+                objgen = objsql['create']
+                objgen = re.sub('__OID__', str(oid), objgen)
+                objgen = re.sub('__SCHEMA__', nspname, objgen)
+                objgen = re.sub('__OBJECT__', objname, objgen)
+                if objclass == 'CONSTRAINT':
+                    objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
+                    objgen = re.sub('__CONRELNAME__', conrelname, objgen)
+                    cur2.execute(objgen)
+                    res = cur2.fetchone()[0]
+                elif objclass == 'TABLE':
+                    res = gettabledef(conn, oid)
+                elif objclass == 'AGGREGATE':
+                    res = getaggdef(conn, oid)
+                else:
+                    cur2.execute(objgen)
+                    res = cur2.fetchone()[0]
+
+                count += 1
+
+                debug(f'going to save {fdir}/{fname}')
+                if not ARGS.dry_run:
+                    Path(fdir).mkdir(parents=True, exist_ok=True)
+                    with open(f'{fdir}/{fname}', 'w') as of:
+                        of.write(res)
+
+    return count or None
+
+
+def implode_class(conn, objclass):
+    """Load objects from directory.
+    
+    Objects go to database (action=implode) or file (action=cat).
+
+    Returns:
+        Counter of processed files.
+    Todo: overwrite?  dependencies?
+    """
+    # DIR/TABLE
+    given_dir = Path(ARGS.DIR, objclass)
+    if not (given_dir.exists() and given_dir.is_dir()):
+        debug(f'directory {given_dir} does not exist', 'INFO')
+        return None
+
+    count = 0
+
+    debug(f'processing {objclass} definitions', 'INFO')
+
+    # DIR/TABLE/public
+    for schema_dir in given_dir.iterdir():
+        if not schema_dir.is_dir():
+            continue
+        schema = schema_dir.name
+        if ARGS.Schema and not re.search(ARGS.Schema, schema):
+            debug(f'ignoring {schema_dir} due to --Schema filter')
+            continue
+        # DIR/TABLE/public/users.sql
+        for objectfile in schema_dir.glob('*.sql'):
+            name = objectfile.stem
+            if ARGS.Object and not re.search(ARGS.Object, name):
+                debug(f'ignoring {objectfile} due to --Object filter')
+                continue
+
+            debug(f'processing {objectfile}', 'DEBUG')
+            if ARGS.ACTION == 'cat':
+                with open(ARGS.File, mode='a') as ofd:
+                    ofd.write(objectfile.read_text())
+                    count += 1
+            elif db_execute_ddl_file(conn, objectfile):
+                count += 1
+
+    return count or None
+
+
+def is_expected_ddl(text):
+    """Try to verify if given text looks like SQL DDL.
+
+    >>> is_expected_ddl('ALTER TABLE x ADD CONSTRAINT x_pkey PRIMARY KEY (id);')
+    True
+    >>> is_expected_ddl('DROP DATABASE mydb;')
+    False
+    """
+    try:
+        text = text.decode()
+    except (UnicodeDecodeError, AttributeError):
+        pass
+
+    return bool(re.match('(CREATE|ALTER TABLE) ', text))
+
+
+def db_execute_ddl_file(conn, filename) -> bool:
+    """Executes DDL from given file in database.
+
+    File content is only minimally validated: check if first line begins with
+    relevant SQL keyword, ie. CREATE or ALTER.
+
+    Args:
+        conn: postgres db connection
+        filename: path of file to be executed
+
+    Returns:
+        True on success, False on failure.
+
+    >>> pg = pgconn('')
+    >>> import tempfile
+    >>> tmp1 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
+    >>> tmp1.write('SELECT 1;'.encode())
+    9
+    >>> # Expecting failure:
+    >>> db_execute_ddl_file(pg, tmp1.name)
+    0
+    >>> tmp2 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
+    >>> tmp2.write('CREATE TEMP TABLE _testtable (id integer);'.encode())
+    42
+    >>> # Expecting success:
+    >>> db_execute_ddl_file(pg, tmp2.name)
+    1
+    """
+
+    file = Path(filename)
+
+    text = file.read_text()
+    if not is_expected_ddl(text):
+        debug(f'unexpected content in "{file}"', 'ERROR')
+        debug(f'unexpected content: {text}', 'DEBUG')
+        return False
+    with conn.cursor() as cur:
+        # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
+        cur.execute('BEGIN')
+        try:
+            cur.execute(text)
+            status = cur.statusmessage
+            if not is_expected_ddl(status):
+                raise UserWarning('Aborting transaction '
+                                  f'due to "{status}" while executing "{file}"')
+        except psycopg2.errors.ProgrammingError as e:
+            errcode = psycopg2.errorcodes.lookup(e.pgcode)
+            msg = e.diag.message_primary
+            # detail = e.diag.message_detail
+            # hint = e.diag.message_hint
+            debug(f'{errcode} when executing {file}: {msg}', 'ERROR')
+            return False
+        finally:
+            cur.execute('END')
+    return True
+
+
+def debug(message, level='DEBUG', stream=sys.stdout) -> None:
+    """Emit a debug message.
+
+    Args:
+        message: message text.
+
+    Some doctest notes:
+        1. Need to specify stream, because doctest hijacks stdout before running.
+        2. Due to leading '2' the test will start failing in year 3000.
+        Hopefully, nobody will care then.
+
+    >>> debug('elen silva lumen omentielvo', 'INFO', stream=sys.stdout) # doctest: +ELLIPSIS
+    2... INFO ... elen silva lumen omentielvo
+    >>> ARGS.debug = False
+    >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
+    """
+
+    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0}
+    if levels.get(level) is None:
+        raise ValueError('wrong value for debug level: {}'.format(level))
+
+    emit_level = levels['INFO']
+    if ARGS.debug:
+        emit_level = levels['DEBUG']
+
+    if levels.get(level) < emit_level:
+        return
+
+    caller = inspect.stack()[1][3]
+
+    ts = strftime("%F %X", localtime())
+
+    stream.write(f'{ts} {level} {caller} {message}\n')
+    stream.flush()
+
+
+def pgconn(dsn='', autocommit=False):
+    """Get PostgreSQL connection.
+
+    Gets a new connection and sets application_name in the session.
+
+    >>> pg = pgconn('')
+    >>> pgcur = pg.cursor()
+    >>> pgcur.execute('SELECT 2+3')
+    >>> pgcur.fetchone()
+    (5,)
+    """
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = autocommit
+    with conn.cursor() as cur:
+        cur.execute("SET application_name = %s", (PROGNAME,))
+        # revert to standard search path to avoid side effects with
+        # pg_get_indexdef and friends.
+        cur.execute("SET search_path to public")
+        # avoid function validation on implode
+        cur.execute("SET check_function_bodies TO off")
+    return conn
+
+
+# Following functions exist to grab object definitions. They probably should be
+# packaged into separate module.
+
+def getaggdef(conn, aggoid: int) -> str:
     """Generate CREATE AGGREGATE statement for given aggregate function.
 
     Credits for SQL go to Erwin Brandstetter
@@ -290,12 +565,12 @@ WHERE aggfnoid = %(oid)s
 
     with conn.cursor() as cur:
         cur.execute(aggdefsql, {'oid': aggoid})
-        return cur.fetchone()[0]
+        defn = cur.fetchone()[0]
+        return defn
 
 
-def gettabledef(conn, taboid):
-    """
-        Generate CREATE TABLE statement for given table.
+def gettabledef(conn, taboid: int) -> str:
+    """Generate CREATE TABLE statement for given table.
 
     >>> pg = pgconn('')
     >>> pgcur = pg.cursor()
@@ -458,242 +733,8 @@ SELECT
 FROM tabdef
             """
         cur.execute(tabdefsql, {'taboid': taboid})
-        return cur.fetchone()[0]
-
-
-def make_where():
-    """Construct a WHERE clause for object list filtering.
-
-    Return a tuple with two items:
-        1. SQL WHERE string with %s-style placeholders
-        2. list of parameters for the placeholders.
-
-    >>> ARGS.Schema = '^myschema$'
-    >>> ARGS.Object = '^myobjectprefix'
-    >>> print(make_where())
-    (' WHERE nspname ~ %s AND objname ~ %s', ['^myschema$', '^myobjectprefix'])
-    """
-    conditions = []
-    params = []
-    clause = ''
-    if ARGS.Schema is not None:
-        conditions.append('nspname ~ %s')
-        params.append(ARGS.Schema)
-    if ARGS.Object is not None:
-        conditions.append('objname ~ %s')
-        params.append(ARGS.Object)
-    if conditions:
-        clause = ' WHERE ' + ' AND '.join(conditions)
-    return (clause, params)
-
-
-def explode_class(conn, objclass):
-    """Extract objects of given class from database to flat files.
-
-    Return counter.
-    """
-    count = 0
-    objsql = METADATAOBJECTS.get(objclass)
-    if objsql is None:
-        raise ValueError(f'Object class {objclass} not supported')
-
-    debug(f'exploding {objclass} definitions', 'INFO')
-
-    with conn.cursor() as cur:
-        sqlselect = objsql['list']
-        sqlfilter, sqlparams = make_where()
-        sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
-            sqlselect, sqlfilter)
-        cur.execute(sqlquery, sqlparams)
-        for r in cur:
-            if objclass == 'CONSTRAINT':
-                (nspname, objname, oid, conrelnspname, conrelname) = r
-            else:
-                (nspname, objname, oid) = r
-            fdir = f'{ARGS.DIR}/{objclass}/{nspname}'
-            fname = f'{objname}.sql'
-            with conn.cursor() as cur2:
-                objgen = objsql['create']
-                objgen = re.sub('__OID__', str(oid), objgen)
-                objgen = re.sub('__SCHEMA__', nspname, objgen)
-                objgen = re.sub('__OBJECT__', objname, objgen)
-                if objclass == 'CONSTRAINT':
-                    objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
-                    objgen = re.sub('__CONRELNAME__', conrelname, objgen)
-                    cur2.execute(objgen)
-                    res = cur2.fetchone()[0]
-                elif objclass == 'TABLE':
-                    res = gettabledef(conn, oid)
-                elif objclass == 'AGGREGATE':
-                    res = getaggdef(conn, oid)
-                else:
-                    cur2.execute(objgen)
-                    res = cur2.fetchone()[0]
-
-                count += 1
-
-                debug(f'going to save {fdir}/{fname}')
-                if not ARGS.dry_run:
-                    Path(fdir).mkdir(parents=True, exist_ok=True)
-                    with open(f'{fdir}/{fname}', 'w') as of:
-                        of.write(res)
-
-    return count or None
-
-
-def implode_class(conn, objclass):
-    """Load objects from directory into database.
-
-    Todos:
-        overwrite?
-        dependencies?
-    """
-    # DIR/TABLE
-    given_dir = Path(ARGS.DIR, objclass)
-    if not (given_dir.exists() and given_dir.is_dir()):
-        debug(f'Directory {given_dir} does not exist', 'INFO')
-        return None
-
-    count = 0
-
-    # DIR/TABLE/public
-    for schema_dir in given_dir.iterdir():
-        if not schema_dir.is_dir():
-            continue
-        schema = schema_dir.name
-        if ARGS.Schema and not re.search(ARGS.Schema, schema):
-            debug(f'Ignoring {schema_dir} due to --Schema filter')
-            continue
-        # DIR/TABLE/public/users.sql
-        for objectfile in schema_dir.glob('*.sql'):
-            name = objectfile.stem
-            if ARGS.Object and not re.search(ARGS.Object, name):
-                debug(f'Ignoring {objectfile} due to --Object filter')
-                continue
-            debug(f'Going to read {objectfile}', 'INFO')
-            if db_execute_ddl_file(conn, objectfile):
-                count += 1
-            else:
-                debug(f'Failed to execute {objectfile}', 'ERROR')
-
-    return count or None
-
-
-def is_expected_ddl(text):
-    """Try to verify if given text looks like SQL DDL.
-    """
-    try:
-        text = text.decode()
-    except (UnicodeDecodeError, AttributeError):
-        pass
-
-    return bool(re.match('(CREATE|ALTER TABLE) ', text))
-
-
-def db_execute_ddl_file(conn, filename) -> int:
-    """Executes DDL from given file in database.
-
-    File content is only minimally validated: check if first line begins with
-    relevant SQL keyword, ie. CREATE or ALTER.
-
-    Args:
-        conn: postgres db connection
-        filename: path of file to be executed
-
-    Returns:
-        1 on success, 0 on failure.
-
-    >>> pg = pgconn('')
-    >>> import tempfile
-    >>> tmp1 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
-    >>> tmp1.write('SELECT 1;'.encode())
-    9
-    >>> # Expecting failure:
-    >>> db_execute_ddl_file(pg, tmp1.name)
-    0
-    >>> tmp2 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
-    >>> tmp2.write('CREATE TEMP TABLE _testtable (id integer);'.encode())
-    42
-    >>> # Expecting success:
-    >>> db_execute_ddl_file(pg, tmp2.name)
-    1
-    """
-
-    file = Path(filename)
-
-    text = file.read_text()
-    if not is_expected_ddl(text):
-        debug(f'Unexpected content in "{file}"', 'ERROR')
-        debug(f'Unexpected content: {text}', 'DEBUG')
-        return 0
-    with conn.cursor() as cur:
-        # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
-        cur.execute('BEGIN')
-        cur.execute(text)
-        status = cur.statusmessage
-        if not is_expected_ddl(status):
-            raise UserWarning(f'Aborting transaction due to "{status}" while executing "{file}"')
-        cur.execute('COMMIT')
-    return 1
-
-
-def debug(message, level='DEBUG', stream=sys.stdout):
-    """Emit a debug message.
-
-    Args:
-        message: message text.
-
-    Some doctest notes:
-        1. Need to specify stream, because doctest hijacks stdout before running.
-        2. Due to leading '2' the test will start failing in year 3000.
-        Hopefully, nobody will care then.
-
-    >>> debug('elen silva lumen omentielvo', 'INFO', stream=sys.stdout) # doctest: +ELLIPSIS
-    2... INFO ... elen silva lumen omentielvo
-    >>> ARGS.debug = False
-    >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
-    """
-
-    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0}
-    if levels.get(level) is None:
-        raise ValueError('wrong value for debug level: {}'.format(level))
-
-    emit_level = levels['INFO']
-    if ARGS.debug:
-        emit_level = levels['DEBUG']
-
-    if levels.get(level) < emit_level:
-        return
-
-    caller = inspect.stack()[1][3]
-
-    ts = strftime("%F %X", localtime())
-
-    stream.write(f'{ts} {level} {caller} {message}\n')
-    stream.flush()
-
-
-def pgconn(dsn='', autocommit=False):
-    """Get PostgreSQL connection.
-
-    Gets a new connection and sets application_name in the session.
-
-    >>> pg = pgconn('')
-    >>> pgcur = pg.cursor()
-    >>> pgcur.execute('SELECT 2+3')
-    >>> pgcur.fetchone()
-    (5,)
-    """
-    conn = psycopg2.connect(dsn)
-    conn.autocommit = autocommit
-    with conn.cursor() as cur:
-        cur.execute("SET application_name = %s", (PROGNAME,))
-        # revert to standard search path to avoid side effects with
-        # pg_get_indexdef and friends.
-        cur.execute("SET search_path to public")
-        # avoid function validation on implode
-        cur.execute("SET check_function_bodies TO off")
-    return conn
+        defn = cur.fetchone()[0]
+        return defn
 
 
 if __name__ == "__main__":
