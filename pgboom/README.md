@@ -1,8 +1,10 @@
 pgboom
 ======
 
-Utility to extract object metadata (ie., database schema) from PostgreSQL
-database to directory of flat SQL files, and vice versa.
+The `pgboom` program manipulates Postgres metadata.
+
+It can extract (**`explode`**) object metadata (ie., database schema) from PostgreSQL
+database to directory of flat SQL files, and vice versa (**`implode`**).
 
 Each db object goes into separate file, `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
 
@@ -22,45 +24,56 @@ Example directory representing a pgbench database initialized with `pgbench -i -
 /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
 ```
 
+The `pgboom` program can also compare (**`diff`**) existing database to directory, producting a report of differences.
+
+It can also concatenate (**`cat`**) directory contents into single SQL file.
+
+
 Synopsis
 --------
 
 ```
 usage: pgboom [-h]
-            [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
-            [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--test]
-            [--debug] [--dry-run]
-            {explode,implode,cat,test} DSN DIR
+              [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
+              [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--test]
+              [--debug] [--dry-run]
+              ACTION DSN DIR
 
-Utility to extract object metadata (ie., database schema) from PostgreSQL
-database to directory structure, and vice versa. Each db object goes into
-separate file: `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
+The pgboom utility manipulates Postgres metadata.
+
+For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 
 positional arguments:
-{explode,implode,cat,test}
-                        Action to perform. * "explode" will save object
-                        definitions from database to directory. * "implode"
-                        will do the opposite of "explode" (but will not
-                        overwrite any pre-existing objects). * "cat" will do
-                        the same as "implode", but write into --File, not
-                        database. * "test" will run a built-in test (for
-                        devs).
-DSN                   PostgreSQL data source in 'key=value' format
-DIR                   Destination/source directory
+  ACTION                explode: Saves object definitions (SQL CREATE statements) from Postgres to directory.
+                        
+                            Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
+                            
+                        implode: Loads object definitions from directory to Postgres.
+                        
+                            Does not overwrite any pre-existing objects.
+                            
+                        diff: Compares database to directory.
+                            
+                        cat: Does the same as implode, but concatenates into --File, not database.
+                            
+                        test: Runs a built-in test (for developers).
+                            
+  DSN                   PostgreSQL data source in 'key=value' format
+  DIR                   Destination/source directory
 
 optional arguments:
--h, --help            show this help message and exit
---Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}
+  -h, --help            show this help message and exit
+  --Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}
                         Type of objects to extract/load
---Schema SCHEMA, -S SCHEMA
-                        Database schema name filter
---Object OBJECT, -O OBJECT
-                        Database object name filter
---File FILE, -F FILE  Output file for the "cat" action
---test                Perform built-in test
---debug, --verbose, -v
+  --Schema SCHEMA, -S SCHEMA
+                        Database schema name regex
+  --Object OBJECT, -O OBJECT
+                        Database object name regex
+  --File FILE, -F FILE  Output file for the "cat" action
+  --test                Perform built-in test
+  --debug, --verbose, -v
                         Set verbose debugging on
---dry-run             Simulation mode (avoid any side effects)
+  --dry-run             Simulation mode (avoid any side effects)
 ```
 
 Examples

@@ -2,8 +2,7 @@
 
 """The pgboom utility manipulates Postgres metadata.
 
-For details, use `--help` or consult project README, available at
-https://github.com/filiprem/pg-tools/blob/master/pgboom/README.md
+For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 """
 
 import sys
@@ -20,13 +19,7 @@ import psycopg2.errorcodes
 
 PROGNAME = 'pgboom'
 
-PROGDESC = """
-Utility to extract object metadata (ie., database schema) from PostgreSQL
-database to directory structure, and vice versa.
-
-Each db object goes into separate file:
-    `DIR/OBJECT-CLASS/SCHEMA-NAME/OBJECT-NAME.sql`.
-"""
+ACTIONS = ('explode', 'implode', 'diff', 'cat', 'test')
 
 ARGS = None
 
@@ -34,7 +27,7 @@ ARGS = None
 # * 'list' query must produce nspname and objname.
 # * full schema names must be included.
 # * 'create' query must include trailing semicolon.
-METADATAOBJECTS = {
+OBJECTMETA = {
     'SCHEMA': {
         'list': """
         SELECT n.nspname, n.nspname AS objname, n.oid
@@ -143,23 +136,24 @@ METADATAOBJECTS = {
 
 def main():
 
-    parser = argparse.ArgumentParser(description=PROGDESC)
+    parser = argparse.ArgumentParser(
+        prog=PROGNAME,
+        description=__doc__,
+        formatter_class=argparse.RawTextHelpFormatter,
+        allow_abbrev=False,
+    )
+
+    actionhelp = '\n'.join(map(lambda a: '{}: {}'.format(a, globals()[a].__doc__), ACTIONS))
 
     # positional arguments: ACTION DSN DIR
-    actionhelp = """Action to perform.
-        * "explode" will save object definitions from database to directory.
-        * "implode" will do the opposite of "explode"
-          (but will not overwrite any pre-existing objects).
-        * "cat" will do the same as "implode", but write into --File, not database.
-        * "test" will run a built-in test (for devs)."""
-    parser.add_argument('ACTION', choices=('explode', 'implode', 'cat', 'test'), help=actionhelp)
+    parser.add_argument('ACTION', choices=ACTIONS, metavar='ACTION', help=actionhelp)
     parser.add_argument('DSN', help="PostgreSQL data source in 'key=value' format")
     parser.add_argument('DIR', help="Destination/source directory")
     # options
-    parser.add_argument('--Class', '-C', choices=METADATAOBJECTS.keys(),
+    parser.add_argument('--Class', '-C', choices=OBJECTMETA.keys(),
                         help="Type of objects to extract/load")
-    parser.add_argument('--Schema', '-S', help="Database schema name filter")
-    parser.add_argument('--Object', '-O', help="Database object name filter")
+    parser.add_argument('--Schema', '-S', help="Database schema name regex")
+    parser.add_argument('--Object', '-O', help="Database object name regex")
     parser.add_argument('--File', '-F', help='Output file for the "cat" action')
     parser.add_argument('--test', action='store_true', help="Perform built-in test")
     parser.add_argument('--debug', '--verbose', '-v', action='store_true',
@@ -173,9 +167,7 @@ def main():
     debug(f'pgboom {ARGS.ACTION} starting')
 
     if ARGS.test or ARGS.ACTION == 'test':
-        debug("entering test code - please ignore ERROR messages "
-              "unless you see specific tests failing", 'INFO')
-        doctest.testmod(verbose=ARGS.debug)
+        test()
         sys.exit(0)
 
     if ARGS.dry_run:
@@ -213,23 +205,15 @@ def main():
             sys.exit(1)
         cat()
     else:
-        raise ValueError('Action not supported: ' + ARGS.ACTION)
+        help()
 
     debug(f'pgboom {ARGS.ACTION} finished')
 
 
-def cat():
-    """Concatenate files from DIR same way as "implode" would.
-
-    The output will go to a file specified by --File option.
-    """
-
-    # implemented as part of implode.
-    return implode(None)
-
-
 def explode(conn):
-    """Get metadata from Postgres into directory.
+    """Saves object definitions (SQL CREATE statements) from Postgres to directory.
+
+    Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
     """
     try:
         if not ARGS.dry_run:
@@ -240,7 +224,7 @@ def explode(conn):
 
     counter = {}
 
-    for objclass in METADATAOBJECTS:
+    for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
         count = explode_class(conn, objclass)
@@ -250,7 +234,9 @@ def explode(conn):
 
 
 def implode(conn):
-    """Get metadata from a directory into Postgres.
+    """Loads object definitions from directory to Postgres.
+
+    Does not overwrite any pre-existing objects.
     """
     root = Path(ARGS.DIR)
     if not (root.exists() and root.is_dir()):
@@ -259,7 +245,7 @@ def implode(conn):
 
     counter = {}
 
-    for objclass in METADATAOBJECTS:
+    for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
         count = implode_class(conn, objclass)
@@ -268,12 +254,34 @@ def implode(conn):
     debug(f'finished, stats: {counter}', 'INFO')
 
 
+def diff():
+    """Compares database to directory.
+    """
+    raise NotImplementedError
+
+
+def cat():
+    """Does the same as implode, but concatenates into --File, not database.
+    """
+    # implemented as part of implode.
+    return implode(None)
+
+
+def test():
+    """Runs a built-in test (for developers).
+    """
+    debug("entering test code - please ignore ERROR messages "
+          "unless you see specific tests failing", 'INFO')
+    doctest.testmod(verbose=ARGS.debug)
+
+
 def make_where():
     """Construct a WHERE clause for object list filtering.
 
-    Return a tuple with two items:
-        1. SQL WHERE string with %s-style placeholders
-        2. list of parameters for the placeholders.
+    Returns:
+        A tuple with two items:
+            1. SQL WHERE string with %s-style placeholders
+            2. list of parameters for the placeholders.
 
     >>> ARGS.Schema = '^myschema$'
     >>> ARGS.Object = '^myobjectprefix'
@@ -300,7 +308,7 @@ def explode_class(conn, objclass):
     Return counter.
     """
     count = 0
-    objsql = METADATAOBJECTS.get(objclass)
+    objsql = OBJECTMETA.get(objclass)
     if objsql is None:
         raise ValueError(f'Object class {objclass} not supported')
 
@@ -348,14 +356,13 @@ def explode_class(conn, objclass):
     return count or None
 
 
-def implode_class(conn, objclass):
+def implode_class(conn, objclass: str) -> int:
     """Load objects from directory.
-    
+
     Objects go to database (action=implode) or file (action=cat).
 
     Returns:
         Counter of processed files.
-    Todo: overwrite?  dependencies?
     """
     # DIR/TABLE
     given_dir = Path(ARGS.DIR, objclass)
