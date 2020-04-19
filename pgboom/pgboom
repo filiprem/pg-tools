@@ -5,13 +5,13 @@
 For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 """
 
-import sys
-import re
 import argparse
 import doctest
 import inspect
-from time import localtime, strftime
 from pathlib import Path
+import re
+import sys
+from time import localtime, strftime
 
 import psycopg2
 import psycopg2.errorcodes
