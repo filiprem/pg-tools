@@ -339,7 +339,7 @@ def explode_class(conn, objclass):
 
                 count += 1
 
-                debug(f'going to save {fdir}/{fname}')
+                debug(f'saving {fdir}/{fname}')
                 if not ARGS.dry_run:
                     Path(fdir).mkdir(parents=True, exist_ok=True)
                     with open(f'{fdir}/{fname}', 'w') as of:
@@ -383,7 +383,9 @@ def implode_class(conn, objclass):
                 continue
 
             debug(f'processing {objectfile}', 'DEBUG')
-            if ARGS.ACTION == 'cat':
+            if ARGS.dry_run:
+                continue
+            elif ARGS.ACTION == 'cat':
                 with open(ARGS.File, mode='a') as ofd:
                     ofd.write(objectfile.read_text())
                     count += 1
