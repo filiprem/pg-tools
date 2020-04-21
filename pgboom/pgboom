@@ -147,9 +147,9 @@ def main():
         # grab the docstring from action's method
         adoc = globals()[a].__doc__
         # remove empty lines, usually present due to docstring conventions
-        adoc = re.sub('\n\s*\n', '\n', adoc, count=1)
+        adoc = re.sub(r'\n\s*\n', '\n', adoc, count=1)
         # strip trailing newlines, if present
-        adoc = re.sub('(\n\s*)+$', '', adoc)
+        adoc = re.sub(r'(\n\s*)+$', '', adoc)
         actiondocs.append(f'{a}: {adoc}\n')
     actionhelp = '\n'.join(actiondocs)
 
