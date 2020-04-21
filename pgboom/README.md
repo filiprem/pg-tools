@@ -35,8 +35,7 @@ Synopsis
 ```
 usage: pgboom [-h]
               [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
-              [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--test]
-              [--debug] [--dry-run]
+              [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--debug]
               ACTION DSN DIR
 
 The pgboom utility manipulates Postgres metadata.
@@ -52,11 +51,13 @@ positional arguments:
                         
                             Does not overwrite any pre-existing objects.
                             
-                        diff: Compares database to directory.
+                        diff: Compares object definitions between database and directory.
+                        
+                            The directory is suposed to be pre-populated with `pgboom explode`.
                             
                         cat: Does the same as implode, but concatenates into --File, not database.
                             
-                        test: Runs a built-in test (for developers).
+                        test: Performs a built-in test (for developers).
                             
   DSN                   PostgreSQL data source in 'key=value' format
   DIR                   Destination/source directory
@@ -70,10 +71,8 @@ optional arguments:
   --Object OBJECT, -O OBJECT
                         Database object name regex
   --File FILE, -F FILE  Output file for the "cat" action
-  --test                Perform built-in test
   --debug, --verbose, -v
                         Set verbose debugging on
-  --dry-run             Simulation mode (avoid any side effects)
 ```
 
 Examples
