@@ -44,21 +44,17 @@ For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 
 positional arguments:
   ACTION                explode: Saves object definitions (SQL CREATE statements) from Postgres to directory.
-                        
                             Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
-                            
+                        
                         implode: Loads object definitions from directory to Postgres.
-                        
                             Does not overwrite any pre-existing objects.
-                            
-                        diff: Compares object definitions between database and directory.
                         
+                        diff: Compares object definitions between database and directory.
                             The directory is suposed to be pre-populated with `pgboom explode`.
-                            
+                        
                         cat: Does the same as implode, but concatenates into --File, not database.
-                            
+                        
                         test: Performs a built-in test (for developers).
-                            
   DSN                   PostgreSQL data source in 'key=value' format
   DIR                   Destination/source directory
 
