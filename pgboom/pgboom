@@ -140,7 +140,6 @@ def main():
         prog=PROGNAME,
         description=__doc__,
         formatter_class=argparse.RawTextHelpFormatter,
-        allow_abbrev=False,
     )
 
     actionhelp = '\n'.join(map(lambda a: '{}: {}'.format(a, globals()[a].__doc__), ACTIONS))
@@ -155,26 +154,16 @@ def main():
     parser.add_argument('--Schema', '-S', help="Database schema name regex")
     parser.add_argument('--Object', '-O', help="Database object name regex")
     parser.add_argument('--File', '-F', help='Output file for the "cat" action')
-    parser.add_argument('--test', action='store_true', help="Perform built-in test")
     parser.add_argument('--debug', '--verbose', '-v', action='store_true',
                         help="Set verbose debugging on")
-    parser.add_argument('--dry-run', action='store_true',
-                        help="Simulation mode (avoid any side effects)")
 
     global ARGS
     ARGS = parser.parse_args()
 
     debug(f'pgboom {ARGS.ACTION} starting')
 
-    if ARGS.test or ARGS.ACTION == 'test':
-        test()
-        sys.exit(0)
-
-    if ARGS.dry_run:
-        debug('running in simulation mode', 'INFO')
-
     conn = None
-    if ARGS.ACTION == 'explode' or ARGS.ACTION == 'implode':
+    if ARGS.ACTION != 'cat':
         debug("testing database connection")
         try:
             conn = pgconn(ARGS.DSN)
@@ -194,17 +183,14 @@ def main():
         explode(conn)
     elif ARGS.ACTION == 'implode':
         implode(conn)
+    elif ARGS.ACTION == 'diff':
+        diff(conn)
     elif ARGS.ACTION == 'cat':
-        if ARGS.File is None:
-            raise ValueError('The "cat" action requires --File option.')
-        try:
-            # overwrite the file
-            open(ARGS.File, mode='w').close()
-        except OSError as err:
-            debug(err, 'ERROR')
-            sys.exit(1)
         cat()
+    elif ARGS.ACTION == 'test':
+        test()
     else:
+        # this should never be reached, but will not hurt.
         help()
 
     debug(f'pgboom {ARGS.ACTION} finished')
@@ -216,8 +202,7 @@ def explode(conn):
     Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
     """
     try:
-        if not ARGS.dry_run:
-            Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
+        Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
     except OSError:
         debug(f'could not access output directory {ARGS.DIR}', 'ERROR')
         raise
@@ -254,8 +239,10 @@ def implode(conn):
     debug(f'finished, stats: {counter}', 'INFO')
 
 
-def diff():
-    """Compares database to directory.
+def diff(conn):
+    """Compares object definitions between database and directory.
+
+    The directory is suposed to be pre-populated with `pgboom explode`.
     """
     raise NotImplementedError
 
@@ -263,16 +250,24 @@ def diff():
 def cat():
     """Does the same as implode, but concatenates into --File, not database.
     """
+    if ARGS.File is None:
+        raise ValueError('The "cat" action requires --File option.')
+    try:
+        # overwrite the file
+        open(ARGS.File, mode='w').close()
+    except OSError as err:
+        debug(err, 'ERROR')
+        sys.exit(1)
     # implemented as part of implode.
     return implode(None)
 
 
 def test():
-    """Runs a built-in test (for developers).
+    """Performs a built-in test (for developers).
     """
     debug("entering test code - please ignore ERROR messages "
           "unless you see specific tests failing", 'INFO')
-    doctest.testmod(verbose=ARGS.debug)
+    return doctest.testmod(verbose=ARGS.debug)
 
 
 def make_where():
@@ -348,10 +343,9 @@ def explode_class(conn, objclass):
                 count += 1
 
                 debug(f'saving {fdir}/{fname}')
-                if not ARGS.dry_run:
-                    Path(fdir).mkdir(parents=True, exist_ok=True)
-                    with open(f'{fdir}/{fname}', 'w') as of:
-                        of.write(objdef)
+                Path(fdir).mkdir(parents=True, exist_ok=True)
+                with open(f'{fdir}/{fname}', 'w') as of:
+                    of.write(objdef)
 
     return count or None
 
@@ -384,14 +378,12 @@ def implode_class(conn, objclass: str) -> int:
             continue
         # DIR/TABLE/public/users.sql
         for objectfile in schema_dir.glob('*.sql'):
+            debug(f'processing {objectfile}')
             name = objectfile.stem
             if ARGS.Object and not re.search(ARGS.Object, name):
                 debug(f'ignoring {objectfile} due to --Object filter')
                 continue
 
-            debug(f'processing {objectfile}', 'DEBUG')
-            if ARGS.dry_run:
-                continue
             elif ARGS.ACTION == 'cat':
                 with open(ARGS.File, mode='a') as ofd:
                     ofd.write(objectfile.read_text())
@@ -402,7 +394,7 @@ def implode_class(conn, objclass: str) -> int:
     return count or None
 
 
-def is_expected_ddl(text):
+def is_expected_ddl(text: str) -> bool:
     """Try to verify if given text looks like SQL DDL.
 
     >>> is_expected_ddl('ALTER TABLE x ADD CONSTRAINT x_pkey PRIMARY KEY (id);')
@@ -431,8 +423,8 @@ def db_execute_ddl_file(conn, filename) -> bool:
     Returns:
         True on success, False on failure.
 
-    >>> pg = pgconn('')
     >>> import tempfile
+    >>> pg = pgconn(ARGS.DSN)
     >>> tmp1 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
     >>> tmp1.write('SELECT 1;'.encode())
     9
@@ -452,7 +444,7 @@ def db_execute_ddl_file(conn, filename) -> bool:
     text = file.read_text()
     if not is_expected_ddl(text):
         debug(f'unexpected content in "{file}"', 'ERROR')
-        debug(f'unexpected content: {text}', 'DEBUG')
+        debug(f'unexpected content: {text}')
         return False
     with conn.cursor() as cur:
         # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
@@ -516,7 +508,7 @@ def pgconn(dsn='', autocommit=False):
 
     Gets a new connection and sets application_name in the session.
 
-    >>> pg = pgconn('')
+    >>> pg = pgconn(ARGS.DSN)
     >>> pgcur = pg.cursor()
     >>> pgcur.execute('SELECT 2+3')
     >>> pgcur.fetchone()
@@ -543,7 +535,7 @@ def getaggdef(conn, aggoid: int) -> str:
     Credits for SQL go to Erwin Brandstetter
     [https://stackoverflow.com/a/48575430/540341].
 
-    >>> pg = pgconn('')
+    >>> pg = pgconn(ARGS.DSN)
     >>> pgcur = pg.cursor()
     >>> pgcur.execute('''CREATE AGGREGATE _testagg (float8) (
     ...    sfunc = float8_accum, stype = float8[],
@@ -581,7 +573,7 @@ WHERE aggfnoid = %(oid)s
 def gettabledef(conn, taboid: int) -> str:
     """Generate CREATE TABLE statement for given table.
 
-    >>> pg = pgconn('')
+    >>> pg = pgconn(ARGS.DSN)
     >>> pgcur = pg.cursor()
     >>> pgcur.execute('''CREATE TEMP TABLE gettabledef_testing (
     ...    intcol integer,
