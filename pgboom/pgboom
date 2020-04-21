@@ -336,14 +336,14 @@ def explode_class(conn, objclass):
                     objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
                     objgen = re.sub('__CONRELNAME__', conrelname, objgen)
                     cur2.execute(objgen)
-                    res = cur2.fetchone()[0]
+                    objdef = cur2.fetchone()[0]
                 elif objclass == 'TABLE':
-                    res = gettabledef(conn, oid)
+                    objdef = gettabledef(conn, oid)
                 elif objclass == 'AGGREGATE':
-                    res = getaggdef(conn, oid)
+                    objdef = getaggdef(conn, oid)
                 else:
                     cur2.execute(objgen)
-                    res = cur2.fetchone()[0]
+                    objdef = cur2.fetchone()[0]
 
                 count += 1
 
@@ -351,7 +351,7 @@ def explode_class(conn, objclass):
                 if not ARGS.dry_run:
                     Path(fdir).mkdir(parents=True, exist_ok=True)
                     with open(f'{fdir}/{fname}', 'w') as of:
-                        of.write(res)
+                        of.write(objdef)
 
     return count or None
 
