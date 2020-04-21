@@ -142,7 +142,16 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter,
     )
 
-    actionhelp = '\n'.join(map(lambda a: '{}: {}'.format(a, globals()[a].__doc__), ACTIONS))
+    actiondocs = []
+    for a in ACTIONS:
+        # grab the docstring from action's method
+        adoc = globals()[a].__doc__
+        # remove empty lines, usually present due to docstring conventions
+        adoc = re.sub('\n\s*\n', '\n', adoc, count=1)
+        # strip trailing newlines, if present
+        adoc = re.sub('(\n\s*)+$', '', adoc)
+        actiondocs.append(f'{a}: {adoc}\n')
+    actionhelp = '\n'.join(actiondocs)
 
     # positional arguments: ACTION DSN DIR
     parser.add_argument('ACTION', choices=ACTIONS, metavar='ACTION', help=actionhelp)
@@ -201,6 +210,7 @@ def explode(conn):
 
     Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
     """
+
     try:
         Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -223,6 +233,7 @@ def implode(conn):
 
     Does not overwrite any pre-existing objects.
     """
+
     root = Path(ARGS.DIR)
     if not (root.exists() and root.is_dir()):
         debug(f'directory {ARGS.DIR} does not exist', 'ERROR')
@@ -244,12 +255,14 @@ def diff(conn):
 
     The directory is suposed to be pre-populated with `pgboom explode`.
     """
+
     raise NotImplementedError
 
 
 def cat():
     """Does the same as implode, but concatenates into --File, not database.
     """
+
     if ARGS.File is None:
         raise ValueError('The "cat" action requires --File option.')
     try:
@@ -265,6 +278,7 @@ def cat():
 def test():
     """Performs a built-in test (for developers).
     """
+
     debug("entering test code - please ignore ERROR messages "
           "unless you see specific tests failing", 'INFO')
     return doctest.testmod(verbose=ARGS.debug)
@@ -283,6 +297,7 @@ def make_where():
     >>> print(make_where())
     (' WHERE nspname ~ %s AND objname ~ %s', ['^myschema$', '^myobjectprefix'])
     """
+
     conditions = []
     params = []
     clause = ''
@@ -302,6 +317,7 @@ def explode_class(conn, objclass):
 
     Return counter.
     """
+
     count = 0
     objsql = OBJECTMETA.get(objclass)
     if objsql is None:
@@ -358,6 +374,7 @@ def implode_class(conn, objclass: str) -> int:
     Returns:
         Counter of processed files.
     """
+
     # DIR/TABLE
     given_dir = Path(ARGS.DIR, objclass)
     if not (given_dir.exists() and given_dir.is_dir()):
@@ -402,6 +419,7 @@ def is_expected_ddl(text: str) -> bool:
     >>> is_expected_ddl('DROP DATABASE mydb;')
     False
     """
+
     try:
         text = text.decode()
     except (UnicodeDecodeError, AttributeError):
@@ -468,10 +486,12 @@ def db_execute_ddl_file(conn, filename) -> bool:
 
 
 def debug(message, level='DEBUG', stream=sys.stdout) -> None:
-    """Emit a debug message.
+    """Emits a debug message.
 
     Args:
         message: message text.
+        level: textual severity level
+        stream: destination IO stream
 
     Some doctest notes:
         1. Need to specify stream, because doctest hijacks stdout before running.
@@ -514,6 +534,7 @@ def pgconn(dsn='', autocommit=False):
     >>> pgcur.fetchone()
     (5,)
     """
+
     conn = psycopg2.connect(dsn)
     conn.autocommit = autocommit
     with conn.cursor() as cur:
@@ -587,6 +608,7 @@ def gettabledef(conn, taboid: int) -> str:
         textcol text DEFAULT 'footext'::text
     );
     """
+
     with conn.cursor() as cur:
         versql = "SELECT current_setting('server_version_num')::integer"
         cur.execute(versql)
