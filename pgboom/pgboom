@@ -205,7 +205,7 @@ def main():
     debug(f'pgboom {ARGS.ACTION} finished')
 
 
-def explode(conn):
+def explode(conn: psycopg2.extensions.connection) -> dict:
     """Saves object definitions (SQL CREATE statements) from Postgres to directory.
 
     Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
@@ -217,15 +217,16 @@ def explode(conn):
         debug(f'could not access output directory {ARGS.DIR}', 'ERROR')
         raise
 
-    counter = {}
+    stats = {}
 
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
         count = explode_class(conn, objclass)
-        counter[objclass] = count
+        stats[objclass] = count
 
-    debug(f'finished, stats: {counter}', 'INFO')
+    debug(f'finished, stats: {stats}', 'INFO')
+    return stats
 
 
 def implode(conn):
@@ -312,21 +313,16 @@ def make_where():
     return (clause, params)
 
 
-def explode_class(conn, objclass):
+def explode_class(conn, objclass: str) -> int:
     """Extract objects of given class from database to flat files.
 
     Return counter.
     """
 
-    count = 0
-    objsql = OBJECTMETA.get(objclass)
-    if objsql is None:
-        raise ValueError(f'Object class {objclass} not supported')
-
     debug(f'processing {objclass} definitions', 'INFO')
-
+    count = 0
     with conn.cursor() as cur:
-        sqlselect = objsql['list']
+        sqlselect = OBJECTMETA[objclass]['list']
         sqlfilter, sqlparams = make_where()
         sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
             sqlselect, sqlfilter)
@@ -334,34 +330,24 @@ def explode_class(conn, objclass):
         for r in cur:
             if objclass == 'CONSTRAINT':
                 (nspname, objname, oid, conrelnspname, conrelname) = r
+                objdef = getobjdef(
+                    conn,
+                    objclass,
+                    oid,
+                    nspname,
+                    objname,
+                    conrelnspname,
+                    conrelname)
             else:
                 (nspname, objname, oid) = r
+                objdef = getobjdef(conn, objclass, oid, nspname, objname)
             fdir = f'{ARGS.DIR}/{objclass}/{nspname}'
             fname = f'{objname}.sql'
-            with conn.cursor() as cur2:
-                objgen = objsql['create']
-                objgen = re.sub('__OID__', str(oid), objgen)
-                objgen = re.sub('__SCHEMA__', nspname, objgen)
-                objgen = re.sub('__OBJECT__', objname, objgen)
-                if objclass == 'CONSTRAINT':
-                    objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
-                    objgen = re.sub('__CONRELNAME__', conrelname, objgen)
-                    cur2.execute(objgen)
-                    objdef = cur2.fetchone()[0]
-                elif objclass == 'TABLE':
-                    objdef = gettabledef(conn, oid)
-                elif objclass == 'AGGREGATE':
-                    objdef = getaggdef(conn, oid)
-                else:
-                    cur2.execute(objgen)
-                    objdef = cur2.fetchone()[0]
-
-                count += 1
-
-                debug(f'saving {fdir}/{fname}')
-                Path(fdir).mkdir(parents=True, exist_ok=True)
-                with open(f'{fdir}/{fname}', 'w') as of:
-                    of.write(objdef)
+            debug(f'saving {fdir}/{fname}')
+            Path(fdir).mkdir(parents=True, exist_ok=True)
+            with open(f'{fdir}/{fname}', 'w') as of:
+                of.write(objdef)
+            count += 1
 
     return count or None
 
@@ -549,6 +535,41 @@ def pgconn(dsn='', autocommit=False):
 
 # Following functions exist to grab object definitions. They probably should be
 # packaged into separate module.
+
+def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str = None,
+              conrelnspname: str = None, conrelname: str = None) -> str:
+    """Get SQL object definition (CREATE statement) from database.
+
+    Either the OID or (nspname, objname) pair will be required.
+
+    >>> pg = pgconn(ARGS.DSN)
+    >>> pgcur = pg.cursor()
+    >>> pgcur.execute("create sequence _getobjdef_test"
+    ...               " minvalue 1 maxvalue 1000"
+    ...               " start 1 cycle cache 2")
+    >>> pgcur.execute("select oid from pg_class where relname='_getobjdef_test'")
+    >>> oid = pgcur.fetchone()[0]
+    >>> getobjdef(pg, 'SEQUENCE', oid, 'public', '_getobjdef_test')
+    'CREATE SEQUENCE public._getobjdef_test AS bigint INCREMENT 1 MINVALUE 1 MAXVALUE 1000 START 1 CACHE 2 CYCLE;'
+    """
+    with conn.cursor() as cur:
+        objgen = OBJECTMETA[objclass]['create']
+        objgen = re.sub('__OID__', str(oid), objgen)
+        objgen = re.sub('__SCHEMA__', nspname, objgen)
+        objgen = re.sub('__OBJECT__', objname, objgen)
+        if objclass == 'CONSTRAINT':
+            objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
+            objgen = re.sub('__CONRELNAME__', conrelname, objgen)
+            cur.execute(objgen)
+            return cur.fetchone()[0]
+        elif objclass == 'TABLE':
+            return gettabledef(conn, oid)
+        elif objclass == 'AGGREGATE':
+            return getaggdef(conn, oid)
+        else:
+            cur.execute(objgen)
+            return cur.fetchone()[0]
+
 
 def getaggdef(conn, aggoid: int) -> str:
     """Generate CREATE AGGREGATE statement for given aggregate function.
