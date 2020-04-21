@@ -3,7 +3,7 @@ pgboom TODO list
 
 * implement "diff"
 
-* maybe switch to Python "logging" instead of custom "debug" function.
+* switch to Python "logging" instead of custom "debug" function.
 
 * try to handle object dependencies on explode / implode / cat.
 
