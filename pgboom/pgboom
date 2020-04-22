@@ -7,10 +7,13 @@ For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 
 import argparse
 import doctest
+import filecmp
 import inspect
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tempfile
 from time import localtime, strftime
 
 import psycopg2
@@ -189,13 +192,13 @@ def main():
             debug(f'connection OK: user={usr}, db={db}, version={ver}')
 
     if ARGS.ACTION == 'explode':
-        explode(conn)
+        explode(conn, ARGS.DIR)
     elif ARGS.ACTION == 'implode':
-        implode(conn)
+        implode(conn, ARGS.DIR)
     elif ARGS.ACTION == 'diff':
-        diff(conn)
+        diff(conn, ARGS.DIR)
     elif ARGS.ACTION == 'cat':
-        cat()
+        cat(ARGS.DIR)
     elif ARGS.ACTION == 'test':
         test()
     else:
@@ -205,16 +208,31 @@ def main():
     debug(f'pgboom {ARGS.ACTION} finished')
 
 
-def explode(conn: psycopg2.extensions.connection) -> dict:
+def verify_metadir(adir: str) -> bool:
+    """Verifies metadata directory existence and minimal contents.
+    """
+
+    p = Path(adir)
+    if not (p.exists() and p.is_dir()):
+        debug(f'directory {adir} does not exist', 'ERROR')
+        sys.exit(2)
+    subdirs = [x.name for x in p.iterdir() if x.is_dir()]
+    if set(subdirs).isdisjoint(OBJECTMETA.keys()):
+        debug(f'directory {adir} does not look like metadata directory', 'ERROR')
+        sys.exit(2)
+    return True
+
+
+def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     """Saves object definitions (SQL CREATE statements) from Postgres to directory.
 
     Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
     """
 
     try:
-        Path(ARGS.DIR).mkdir(parents=True, exist_ok=True)
+        Path(metadir).mkdir(parents=True, exist_ok=True)
     except OSError:
-        debug(f'could not access output directory {ARGS.DIR}', 'ERROR')
+        debug(f'could not access output directory {metadir}', 'ERROR')
         raise
 
     stats = {}
@@ -222,45 +240,53 @@ def explode(conn: psycopg2.extensions.connection) -> dict:
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        count = explode_class(conn, objclass)
+        count = explode_class(conn, metadir, objclass)
         stats[objclass] = count
 
     debug(f'finished, stats: {stats}', 'INFO')
     return stats
 
 
-def implode(conn):
+def implode(conn, metadir):
     """Loads object definitions from directory to Postgres.
 
     Does not overwrite any pre-existing objects.
     """
 
-    root = Path(ARGS.DIR)
-    if not (root.exists() and root.is_dir()):
-        debug(f'directory {ARGS.DIR} does not exist', 'ERROR')
-        sys.exit(1)
-
-    counter = {}
+    verify_metadir(metadir)
+    stats = {}
 
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
         count = implode_class(conn, objclass)
-        counter[objclass] = count
+        stats[objclass] = count
 
-    debug(f'finished, stats: {counter}', 'INFO')
+    debug(f'finished, stats: {stats}', 'INFO')
+    return stats
 
 
-def diff(conn):
+def diff(conn, metadir: str):
     """Compares object definitions between database and directory.
 
     The directory is suposed to be pre-populated with `pgboom explode`.
     """
 
-    raise NotImplementedError
+    verify_metadir(metadir)
+
+    # explode to temporary dir and compare
+    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as tmpdir:
+        debug(f'exploding database to {tmpdir}', 'INFO')
+        explode(conn, tmpdir)
+        debug(f'comparing {tmpdir} to {metadir}', 'INFO')
+        # method 1: use Python difflib/filecmp - works, but is ugly.
+        # dd = filecmp.dircmp(tmpdir, metadir)
+        # dd.report_full_closure()
+        # method 2: use system diff.
+        subprocess.run(['diff', '-Naur', tmpdir, metadir])
 
 
-def cat():
+def cat(metadir: str) -> dict:
     """Does the same as implode, but concatenates into --File, not database.
     """
 
@@ -273,7 +299,7 @@ def cat():
         debug(err, 'ERROR')
         sys.exit(1)
     # implemented as part of implode.
-    return implode(None)
+    return implode(None, metadir)
 
 
 def test():
@@ -313,7 +339,7 @@ def make_where():
     return (clause, params)
 
 
-def explode_class(conn, objclass: str) -> int:
+def explode_class(conn, metadir: str, objclass: str) -> int:
     """Extract objects of given class from database to flat files.
 
     Return counter.
@@ -341,7 +367,7 @@ def explode_class(conn, objclass: str) -> int:
             else:
                 (nspname, objname, oid) = r
                 objdef = getobjdef(conn, objclass, oid, nspname, objname)
-            fdir = f'{ARGS.DIR}/{objclass}/{nspname}'
+            fdir = f'{metadir}/{objclass}/{nspname}'
             fname = f'{objname}.sql'
             debug(f'saving {fdir}/{fname}')
             Path(fdir).mkdir(parents=True, exist_ok=True)
@@ -362,9 +388,9 @@ def implode_class(conn, objclass: str) -> int:
     """
 
     # DIR/TABLE
-    given_dir = Path(ARGS.DIR, objclass)
-    if not (given_dir.exists() and given_dir.is_dir()):
-        debug(f'directory {given_dir} does not exist', 'INFO')
+    objdir = Path(ARGS.DIR, objclass)
+    if not (objdir.exists() and objdir.is_dir()):
+        debug(f'directory {objdir} does not exist', 'INFO')
         return None
 
     count = 0
@@ -372,7 +398,7 @@ def implode_class(conn, objclass: str) -> int:
     debug(f'processing {objclass} definitions', 'INFO')
 
     # DIR/TABLE/public
-    for schema_dir in given_dir.iterdir():
+    for schema_dir in objdir.iterdir():
         if not schema_dir.is_dir():
             continue
         schema = schema_dir.name
@@ -427,7 +453,6 @@ def db_execute_ddl_file(conn, filename) -> bool:
     Returns:
         True on success, False on failure.
 
-    >>> import tempfile
     >>> pg = pgconn(ARGS.DSN)
     >>> tmp1 = tempfile.NamedTemporaryFile(suffix='.sql', buffering=0)
     >>> tmp1.write('SELECT 1;'.encode())
