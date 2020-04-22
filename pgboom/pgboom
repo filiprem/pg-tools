@@ -22,8 +22,7 @@ import psycopg2.errorcodes
 
 PROGNAME = 'pgboom'
 
-ACTIONS = ('explode', 'implode', 'diff', 'cat', 'test', 'simplediff',
-           'systemdiff')
+ACTIONS = ('explode', 'implode', 'diff', 'cat', 'test')
 
 ARGS = None
 
@@ -166,7 +165,15 @@ def main():
                         help="Type of objects to extract/load")
     parser.add_argument('--Schema', '-S', help="Database schema name regex")
     parser.add_argument('--Object', '-O', help="Database object name regex")
-    parser.add_argument('--File', '-F', help='Output file for the "cat" action')
+    parser.add_argument('--File', '-F', help='Output file for `cat` and `diff` actions')
+    parser.add_argument(
+        '--diffmethod',
+        choices=(
+            'default',
+            'simple',
+            'system'),
+        default='default',
+        help='Diff method: "default", "simple" (filecmp library) or "system" (diff program)')
     parser.add_argument('--debug', '--verbose', '-v', action='store_true',
                         help="Set verbose debugging on")
 
@@ -266,47 +273,17 @@ def implode(conn, metadir):
     return stats
 
 
-def simplediff(conn, metadir: str):
-    """Compares object definitions between directory and database.
-
-    The directory is supposed to be pre-populated with `pgboom explode`.
-    This method uses built-in Python dircmp.
-    """
-
-    verify_metadir(metadir)
-    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as tmpdir:
-        debug(f'exploding database to {tmpdir}', 'INFO')
-        explode(conn, tmpdir)
-        debug(f'comparing {tmpdir} to {metadir}', 'INFO')
-        dd = filecmp.dircmp(metadir, tmpdir)
-        dd.report_full_closure()
-
-
-def systemdiff(conn, metadir):
-    """Compares object definitions between directory and database.
-
-    The directory is supposed to be pre-populated with `pgboom explode`.
-    This method uses system `diff` command.
-    """
-
-    verify_metadir(metadir)
-    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as tmpdir:
-        debug(f'exploding database to {tmpdir}', 'INFO')
-        explode(conn, tmpdir)
-        debug(f'comparing {tmpdir} to {metadir}', 'INFO')
-        subprocess.run(['diff', '-r', '-C3', '-N', metadir, tmpdir], check=False)
-
-
 def diff(conn, metadir):
-    """Compares object definitions between directory and database.
+    """Compares object definitions between database and directory, saving result to --File.
 
-    The directory is supposed to be pre-populated with `pgboom explode`.
+    The directory should have same structure as produced by `pgboom explode`.
+    Method of comparison can be overriden with --diffmethod option.
     """
 
     verify_metadir(metadir)
 
     if ARGS.File is None:
-        debug('The "diff" action requires --File option', 'ERROR')
+        debug('The `diff` action requires --File option', 'ERROR')
         sys.exit(1)
     try:
         ofd = open(ARGS.File, mode='w')
@@ -314,21 +291,78 @@ def diff(conn, metadir):
         debug(err, 'ERROR')
         sys.exit(1)
 
+    if ARGS.diffmethod == 'system':
+        return systemdiff(conn, metadir, ofd)
+    elif ARGS.diffmethod == 'simple':
+        return simplediff(conn, metadir, ofd)
+    else:
+        return pgdiff(conn, metadir, ofd)
+
+
+def pgdiff(conn, metadir, ofd):
+    """Compares object definitions between database and directory.
+
+    Generates a SQL script (patch) which will do the best to modify database in
+    such a way, that after script execution the database is consistent with the
+    directory.
+    """
+
     stats = {}
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        count = diff_objects(conn, metadir, objclass, ofd)
+        count = pgdiff_objects(conn, metadir, objclass, ofd)
         ofd.flush()
         stats[objclass] = count
 
     ofd.close()
     debug(f'finished, stats: {stats}', 'INFO')
-    return stats
 
 
-def diff_objects(conn, metadir, objclass, diffstream) -> int:
-    """Compare objects of given class between directory and database.
+def simplediff(conn, metadir, ofd):
+    """Compares object definitions between database and directory.
+
+    This method uses dircmp class from built-in Python filecmp library.
+    Generates a report in a lousy(*) text format.
+
+    (*) "lousy" is not my insult, it's a term quoted from filecmp.py
+    """
+
+    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as dbdir:
+        debug(f'exploding database to {dbdir}', 'INFO')
+        explode(conn, dbdir)
+        debug(f'comparing {dbdir} to {metadir}', 'INFO')
+        dd = filecmp.dircmp(dbdir, metadir)
+        save_stdout = sys.stdout
+        sys.stdout = ofd
+        try:
+            dd.report_full_closure()
+        finally:
+            sys.stdout = save_stdout
+
+
+def systemdiff(conn, metadir, ofd):
+    """Compares object definitions between database and directory.
+
+    This method uses system `diff` command.
+    Generates output in context diff format.
+    """
+
+    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as dbdir:
+        debug(f'exploding database to {dbdir}', 'INFO')
+        explode(conn, dbdir)
+        debug(f'comparing {dbdir} to {metadir}', 'INFO')
+        for objclass in OBJECTMETA:
+            dbsubdir = Path(dbdir, objclass)
+            metasubdir = Path(metadir, objclass)
+            if dbsubdir.exists() or metasubdir.exists():
+                debug(f'processing {objclass} definitions')
+                subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
+                                metasubdir], stdout=ofd, check=False)
+
+
+def pgdiff_objects(conn, metadir, objclass, ofd) -> int:
+    """Compare objects of given class between database and directory.
 
     Return counter (how many objects differ).
     """
@@ -365,9 +399,8 @@ def diff_objects(conn, metadir, objclass, diffstream) -> int:
                 # TODO: compare contents
             else:
                 # emit CREATE
-                diffstream.write(objdef)
-
-            count += 1  # ???
+                ofd.write(objdef)
+                count += 1
 
     return count or None
 
