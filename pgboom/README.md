@@ -35,7 +35,8 @@ Synopsis
 ```
 usage: pgboom [-h]
               [--Class {SCHEMA,FUNCTION,AGGREGATE,SEQUENCE,TABLE,CONSTRAINT,INDEX,VIEW}]
-              [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--debug]
+              [--Schema SCHEMA] [--Object OBJECT] [--File FILE]
+              [--diffmethod {default,simple,system}] [--debug]
               ACTION DSN DIR
 
 The pgboom utility manipulates Postgres metadata.
@@ -49,8 +50,9 @@ positional arguments:
                         implode: Loads object definitions from directory to Postgres.
                             Does not overwrite any pre-existing objects.
                         
-                        diff: Compares object definitions between directory and database.
-                            The directory is suposed to be pre-populated with `pgboom explode`.
+                        diff: Compares object definitions between database and directory, saving result to --File.
+                            The directory should have same structure as produced by `pgboom explode`.
+                            Method of comparison can be overriden with --diffmethod option.
                         
                         cat: Does the same as implode, but concatenates into --File, not database.
                         
@@ -66,7 +68,9 @@ optional arguments:
                         Database schema name regex
   --Object OBJECT, -O OBJECT
                         Database object name regex
-  --File FILE, -F FILE  Output file for the "cat" action
+  --File FILE, -F FILE  Output file for `cat` and `diff` actions
+  --diffmethod {default,simple,system}
+                        Diff method: "default", "simple" (filecmp library) or "system" (diff program)
   --debug, --verbose, -v
                         Set verbose debugging on
 ```
