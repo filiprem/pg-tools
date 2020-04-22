@@ -76,7 +76,7 @@ OBJECTMETA = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         """,
         'create': """
-        SELECT format('CREATE SEQUENCE %I.%I AS %s '
+        SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
                 'INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
             sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
@@ -545,12 +545,13 @@ def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str =
     >>> pg = pgconn(ARGS.DSN)
     >>> pgcur = pg.cursor()
     >>> pgcur.execute("create sequence _getobjdef_test"
-    ...               " minvalue 1 maxvalue 1000"
-    ...               " start 1 cycle cache 2")
+    ...               " minvalue 1 maxvalue 1000 increment 10 start 1 cycle")
     >>> pgcur.execute("select oid from pg_class where relname='_getobjdef_test'")
     >>> oid = pgcur.fetchone()[0]
-    >>> getobjdef(pg, 'SEQUENCE', oid, 'public', '_getobjdef_test')
-    'CREATE SEQUENCE public._getobjdef_test AS bigint INCREMENT 1 MINVALUE 1 MAXVALUE 1000 START 1 CACHE 2 CYCLE;'
+    >>> objdef = getobjdef(pg, 'SEQUENCE', oid, 'public', '_getobjdef_test')
+    >>> print(objdef)
+    CREATE SEQUENCE public._getobjdef_test AS bigint
+    INCREMENT 10 MINVALUE 1 MAXVALUE 1000 START 1 CACHE 1 CYCLE;
     """
     with conn.cursor() as cur:
         objgen = OBJECTMETA[objclass]['create']
