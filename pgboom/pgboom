@@ -267,7 +267,7 @@ def implode(conn, metadir):
 
 
 def diff(conn, metadir: str):
-    """Compares object definitions between database and directory.
+    """Compares object definitions between directory and database.
 
     The directory is suposed to be pre-populated with `pgboom explode`.
     """

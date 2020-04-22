@@ -49,7 +49,7 @@ positional arguments:
                         implode: Loads object definitions from directory to Postgres.
                             Does not overwrite any pre-existing objects.
                         
-                        diff: Compares object definitions between database and directory.
+                        diff: Compares object definitions between directory and database.
                             The directory is suposed to be pre-populated with `pgboom explode`.
                         
                         cat: Does the same as implode, but concatenates into --File, not database.
