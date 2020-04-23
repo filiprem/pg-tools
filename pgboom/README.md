@@ -122,7 +122,7 @@ $ pgboom cat '' /tmp/dl --File /tmp/dl.txt
 Example of `diff` functionality:
 
 1. Prepare test database:
-```bash
+```
     $ dropdb test
     $ createdb test
     $ pgbench test -i
@@ -163,8 +163,10 @@ Example of `diff` functionality:
     2020-04-23 16:35:58 INFO diff comparing /tmp/test.drk6cm67 to /tmp/test
 ```
 5. View report of differences (context diff):
-```diff
+```
     $ more diff.txt
+```
+```diff
     diff -r -C3 -N /tmp/test.drk6cm67/SCHEMA/s0/s0.sql /tmp/test/SCHEMA/s0/s0.sql
     *** /tmp/test.drk6cm67/SCHEMA/s0/s0.sql	2020-04-23 16:35:58.765429239 +0200
     --- /tmp/test/SCHEMA/s0/s0.sql	1970-01-01 01:00:00.000000000 +0100
