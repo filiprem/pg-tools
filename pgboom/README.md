@@ -230,6 +230,7 @@ Known issues
 ------------
 
 * Not all object types are supported.
+* ACLs (ownership, GRANTs) are not supported.
 * PostgreSQL versions older than 11 are not supported.
 * The implode action does not care about dependencies and will most probably
   fail on a pre-populated database.

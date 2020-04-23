@@ -304,7 +304,9 @@ def cat(metadir: str) -> dict:
         raise ValueError('The "cat" action requires --File option.')
     try:
         # overwrite the file
-        open(ARGS.File, mode='w').close()
+        ofd = open(ARGS.File, mode='w')
+        ofd.write('SET check_function_bodies TO off;\n\n')
+        ofd.close()
     except OSError as err:
         debug(err, 'ERROR')
         sys.exit(1)
