@@ -262,7 +262,7 @@ def diff(conn, metadir):
         debug(err, 'ERROR')
         sys.exit(1)
 
-    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as dbdir:
+    with tempfile.TemporaryDirectory() as dbdir:
         debug(f'exploding database to {dbdir}', 'INFO')
         explode(conn, dbdir)
         debug(f'comparing {dbdir} to {metadir}', 'INFO')
