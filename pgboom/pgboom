@@ -39,6 +39,17 @@ OBJECTMETA = {
         'create': """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
         FROM pg_catalog.pg_namespace n WHERE n.oid = __OID__ """,
     },
+    'EXTENSION': {
+        'list': """SELECT n.nspname, x.extname AS objname, x.oid
+        FROM pg_extension x
+        JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
+        WHERE x.extname <> 'plpgsql' """,
+        'create': """SELECT pg_catalog.format(
+            'CREATE EXTENSION %I SCHEMA %I;', x.extname, n.nspname)
+        FROM pg_catalog.pg_extension x
+        JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
+        WHERE x.oid = __OID__""",
+    },
     'FUNCTION': {  # all functions except aggregate
         'list': """SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
@@ -46,7 +57,9 @@ OBJECTMETA = {
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind <> 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND p.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         'create': """SELECT regexp_replace(pg_get_functiondef(__OID__),
                  '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'""",
     },
@@ -57,7 +70,9 @@ OBJECTMETA = {
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind = 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND p.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         # this is overriden later (see getaggdef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_aggregatedef(__OID__) || ';'""",
@@ -66,7 +81,9 @@ OBJECTMETA = {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'S'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND c.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         'create': """SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
                 'INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
@@ -79,7 +96,9 @@ OBJECTMETA = {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'r'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND c.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
@@ -109,7 +128,9 @@ OBJECTMETA = {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'v'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND c.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         'create': """SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n'
             || pg_get_viewdef(__OID__, true)""",
     },
