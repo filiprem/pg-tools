@@ -6,16 +6,14 @@ For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 """
 
 import argparse
-import difflib
 import doctest
-import filecmp
 import inspect
-from pathlib import Path
+import pathlib
 import re
 import subprocess
 import sys
 import tempfile
-from time import localtime, strftime
+import time
 
 import psycopg2
 import psycopg2.errorcodes
@@ -40,7 +38,6 @@ OBJECTMETA = {
         AND n.nspname !~ '^pg_toast' """,
         'create': """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
         FROM pg_catalog.pg_namespace n WHERE n.oid = __OID__ """,
-        'drop': "DROP SCHEMA __SCHEMA__",
     },
     'FUNCTION': {  # all functions except aggregate
         'list': """SELECT n.nspname, p.proname || '(' ||
@@ -52,7 +49,6 @@ OBJECTMETA = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT regexp_replace(pg_get_functiondef(__OID__),
                  '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'""",
-        'drop': "DROP FUNCTION __SCHEMA__.__OBJECT__",
     },
     'AGGREGATE': {  # aggregate functions only
         'list': """SELECT n.nspname, p.proname || '(' ||
@@ -65,7 +61,6 @@ OBJECTMETA = {
         # this is overriden later (see getaggdef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_aggregatedef(__OID__) || ';'""",
-        'drop': "DROP AGGREGATE __SCHEMA__.__OBJECT__",
     },
     'SEQUENCE': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
@@ -79,7 +74,6 @@ OBJECTMETA = {
             sp.cache_size, case when sp.cycle_option then ' CYCLE' else '' end)
         FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(__OID__) sp
         WHERE c.oid = __OID__ AND n.oid = c.relnamespace """,
-        'drop': "DROP SEQUENCE __SCHEMA__.__OBJECT__",
     },
     'TABLE': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
@@ -89,7 +83,6 @@ OBJECTMETA = {
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
-        'drop': "DROP TABLE __SCHEMA__.__OBJECT__",
     },
     'CONSTRAINT': {
         'list': """SELECT n.nspname, con.conname AS objname, con.oid,
@@ -103,7 +96,6 @@ OBJECTMETA = {
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
             pg_get_constraintdef(__OID__, true))""",
-        'drop': "ALTER TABLE __SCHEMA__.??? DROP CONSTRAINT __OBJECT__",
     },
     'INDEX': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
@@ -112,7 +104,6 @@ OBJECTMETA = {
         AND i.indexrelid = c.oid AND NOT i.indisprimary
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'""",
-        'drop': "DROP INDEX __SCHEMA__.__OBJECT__",
     },
     'VIEW': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
@@ -121,7 +112,6 @@ OBJECTMETA = {
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n'
             || pg_get_viewdef(__OID__, true)""",
-        'drop': "DROP VIEW __SCHEMA__.__OBJECT__",
     },
 }
 
@@ -155,14 +145,6 @@ def main():
     parser.add_argument('--Schema', '-S', help="Database schema name regex")
     parser.add_argument('--Object', '-O', help="Database object name regex")
     parser.add_argument('--File', '-F', help='Output file for `cat` and `diff` actions')
-    parser.add_argument(
-        '--diffmethod',
-        choices=(
-            'default',
-            'simple',
-            'system'),
-        default='default',
-        help='Diff method: "default", "simple" (filecmp library) or "system" (diff program)')
     parser.add_argument('--debug', '--verbose', '-v', action='store_true',
                         help="Set verbose debugging on")
 
@@ -208,7 +190,7 @@ def verify_metadir(adir: str) -> bool:
     """Verifies metadata directory existence and minimal contents.
     """
 
-    p = Path(adir)
+    p = pathlib.Path(adir)
     if not (p.exists() and p.is_dir()):
         debug(f'directory {adir} does not exist', 'ERROR')
         sys.exit(2)
@@ -226,7 +208,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     """
 
     try:
-        Path(metadir).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(metadir).mkdir(parents=True, exist_ok=True)
     except OSError:
         debug(f'could not access output directory {metadir}', 'ERROR')
         raise
@@ -263,10 +245,10 @@ def implode(conn, metadir):
 
 
 def diff(conn, metadir):
-    """Compares object definitions between database and directory, saving result to --File.
+    """Compares object definitions between database and directory, using system `diff` command.
 
     The directory should have same structure as produced by `pgboom explode`.
-    Method of comparison can be overriden with --diffmethod option.
+    Results are saved to --File, in context diff format.
     """
 
     verify_metadir(metadir)
@@ -280,134 +262,17 @@ def diff(conn, metadir):
         debug(err, 'ERROR')
         sys.exit(1)
 
-    stats = {}
-    if ARGS.diffmethod == 'system':
-        stats = systemdiff(conn, metadir, ofd)
-    elif ARGS.diffmethod == 'simple':
-        stats = simplediff(conn, metadir, ofd)
-    else:
-        stats = pgdiff(conn, metadir, ofd)
-
-    debug(f'finished, stats: {stats}', 'INFO')
-    return stats
-
-
-def pgdiff(conn, metadir, ofd):
-    """Compares object definitions between database and directory.
-
-    Generates a SQL script (patch) which will do the best to modify database in
-    such a way, that after script execution the database is consistent with the
-    directory.
-    """
-
-    stats = {}
-    for objclass in OBJECTMETA:
-        if ARGS.Class is not None and objclass != ARGS.Class:
-            continue
-        count = pgdiff_objects(conn, metadir, objclass, ofd)
-        ofd.flush()
-        stats[objclass] = count
-
-    ofd.close()
-    return stats
-
-
-def simplediff(conn, metadir, ofd):
-    """Compares object definitions between database and directory.
-
-    This method uses dircmp class from built-in Python filecmp library.
-    Generates a report in a lousy(*) text format.
-
-    (*) "lousy" is not my insult, it's a term quoted from filecmp.py
-    """
-
-    with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as dbdir:
-        debug(f'exploding database to {dbdir}', 'INFO')
-        explode(conn, dbdir)
-        debug(f'comparing {dbdir} to {metadir}', 'INFO')
-        dd = filecmp.dircmp(dbdir, metadir)
-        save_stdout = sys.stdout
-        sys.stdout = ofd
-        try:
-            dd.report_full_closure()
-        finally:
-            sys.stdout = save_stdout
-
-
-def systemdiff(conn, metadir, ofd):
-    """Compares object definitions between database and directory.
-
-    This method uses system `diff` command.
-    Generates output in context diff format.
-    """
-
     with tempfile.TemporaryDirectory(prefix=f'{metadir}.') as dbdir:
         debug(f'exploding database to {dbdir}', 'INFO')
         explode(conn, dbdir)
         debug(f'comparing {dbdir} to {metadir}', 'INFO')
         for objclass in OBJECTMETA:
-            dbsubdir = Path(dbdir, objclass)
-            metasubdir = Path(metadir, objclass)
+            dbsubdir = pathlib.Path(dbdir, objclass)
+            metasubdir = pathlib.Path(metadir, objclass)
             if dbsubdir.exists() or metasubdir.exists():
                 debug(f'processing {objclass} definitions')
                 subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
                                 metasubdir], stdout=ofd, check=False)
-
-
-def pgdiff_objects(conn, metadir, objclass, ofd) -> int:
-    """Compare objects of given class between database and directory.
-
-    Return counter (how many objects differ).
-    """
-
-    # TODO: DRY (code duplication with explode_objects).
-
-    debug(f'processing {objclass} definitions')
-    count = 0
-    with conn.cursor() as cur:
-        sqlselect = OBJECTMETA[objclass]['list']
-        sqlfilter, sqlparams = make_where()
-        sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
-            sqlselect, sqlfilter)
-        cur.execute(sqlquery, sqlparams)
-        for r in cur:
-            if objclass == 'CONSTRAINT':
-                (nspname, objname, oid, conrelnspname, conrelname) = r
-                objdef = getobjdef(
-                    conn,
-                    objclass,
-                    oid,
-                    nspname,
-                    objname,
-                    conrelnspname,
-                    conrelname)
-            else:
-                (nspname, objname, oid) = r
-                objdef = getobjdef(conn, objclass, oid, nspname, objname)
-            fdir = f'{metadir}/{objclass}/{nspname}'
-            fname = f'{objname}.sql'
-            mdobj = Path(f'{fdir}/{fname}')
-            if mdobj.exists():
-                # debug(f'comparing {objclass} {nspname}.{objname} to {fdir}/{fname}')
-                dblines = objdef.splitlines(keepends=True)
-                mdlines = mdobj.open().readlines()
-                db2md = difflib.context_diff(dblines, mdlines,
-                                             fromfile=f'{objclass} {nspname}.{objname}',
-                                             tofile=str(mdobj))
-                db2md = list(db2md)
-                if len(db2md) > 0:
-                    debug(f'{objclass} {nspname}.{objname} differs from {mdobj}', 'INFO')
-                    count += 1
-                    ofd.writelines(db2md)
-                else:
-                    debug(f'{objclass} {nspname}.{objname} is identical to {mdobj}', 'DEBUG')
-            else:
-                debug(f'{objclass} {nspname}.{objname} does not exists as {mdobj}', 'INFO')
-                # emit CREATE?
-                ofd.write(objdef)
-                count += 1
-
-    return count or None
 
 
 def cat(metadir: str) -> dict:
@@ -494,7 +359,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
             fdir = f'{metadir}/{objclass}/{nspname}'
             fname = f'{objname}.sql'
             debug(f'saving {fdir}/{fname}')
-            Path(fdir).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(fdir).mkdir(parents=True, exist_ok=True)
             with open(f'{fdir}/{fname}', 'w') as of:
                 of.write(objdef)
             count += 1
@@ -512,7 +377,7 @@ def implode_objects(conn, objclass: str) -> int:
     """
 
     # DIR/TABLE
-    objdir = Path(ARGS.DIR, objclass)
+    objdir = pathlib.Path(ARGS.DIR, objclass)
     if not (objdir.exists() and objdir.is_dir()):
         debug(f'directory {objdir} does not exist', 'INFO')
         return None
@@ -592,7 +457,7 @@ def db_execute_ddl_file(conn, filename) -> bool:
     1
     """
 
-    file = Path(filename)
+    file = pathlib.Path(filename)
 
     text = file.read_text()
     if not is_expected_ddl(text):
@@ -652,7 +517,7 @@ def debug(message, level='DEBUG', stream=sys.stdout) -> None:
 
     caller = inspect.stack()[1][3]
 
-    ts = strftime("%F %X", localtime())
+    ts = time.strftime("%F %X", time.localtime())
 
     stream.write(f'{ts} {level} {caller} {message}\n')
     stream.flush()
