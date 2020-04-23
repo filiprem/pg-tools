@@ -6,6 +6,7 @@ For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 """
 
 import argparse
+import difflib
 import doctest
 import filecmp
 import inspect
@@ -32,107 +33,95 @@ ARGS = None
 # * 'create' query must include trailing semicolon.
 OBJECTMETA = {
     'SCHEMA': {
-        'list': """
-        SELECT n.nspname, n.nspname AS objname, n.oid
+        'list': """SELECT n.nspname, n.nspname AS objname, n.oid
         FROM pg_catalog.pg_namespace n
         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
         AND n.nspname !~ '^pg_temp'
-        AND n.nspname !~ '^pg_toast'
-        """,
+        AND n.nspname !~ '^pg_toast' """,
         'create': """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
-        FROM pg_catalog.pg_namespace n
-        WHERE n.oid = __OID__
-        """,
+        FROM pg_catalog.pg_namespace n WHERE n.oid = __OID__ """,
+        'drop': "DROP SCHEMA __SCHEMA__",
     },
     'FUNCTION': {  # all functions except aggregate
-        'list': """
-        SELECT n.nspname, p.proname || '(' ||
+        'list': """SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
         || ')' AS objname, p.oid
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind <> 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT regexp_replace(pg_get_functiondef(__OID__),
-                 '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'"""
+                 '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'""",
+        'drop': "DROP FUNCTION __SCHEMA__.__OBJECT__",
     },
     'AGGREGATE': {  # aggregate functions only
-        'list': """
-        SELECT n.nspname, p.proname || '(' ||
+        'list': """SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
         || ')' AS objname, p.oid
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind = 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         # this is overriden later (see getaggdef method).
         # we just anticipate future built-in function name here.
-        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'"""
+        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'""",
+        'drop': "DROP AGGREGATE __SCHEMA__.__OBJECT__",
     },
     'SEQUENCE': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'S'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """
-        SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        'create': """SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
                 'INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
             sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
             sp.cache_size, case when sp.cycle_option then ' CYCLE' else '' end)
         FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(__OID__) sp
-        WHERE c.oid = __OID__ AND n.oid = c.relnamespace
-        """
+        WHERE c.oid = __OID__ AND n.oid = c.relnamespace """,
+        'drop': "DROP SEQUENCE __SCHEMA__.__OBJECT__",
     },
     'TABLE': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'r'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
-        'create': """SELECT pg_get_tabledef(__OID__) || ';'"""
+        'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
+        'drop': "DROP TABLE __SCHEMA__.__OBJECT__",
     },
     'CONSTRAINT': {
-        'list': """
-        SELECT n.nspname, con.conname AS objname, con.oid,
+        'list': """SELECT n.nspname, con.conname AS objname, con.oid,
             crn.nspname AS conrelnspname, cr.relname AS conrelname
         FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
         WHERE n.oid = con.connamespace
         AND cr.oid = con.conrelid
         AND crn.oid = cr.relnamespace
         AND con.contype NOT IN ('u')
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
-            pg_get_constraintdef(__OID__, true))"""
+            pg_get_constraintdef(__OID__, true))""",
+        'drop': "ALTER TABLE __SCHEMA__.??? DROP CONSTRAINT __OBJECT__",
     },
     'INDEX': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n, pg_index i
-        WHERE n.oid = c.relnamespace AND c.relkind = 'i' AND i.indexrelid = c.oid AND NOT i.indisprimary
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'"""
+        WHERE n.oid = c.relnamespace AND c.relkind = 'i'
+        AND i.indexrelid = c.oid AND NOT i.indisprimary
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'""",
+        'drop': "DROP INDEX __SCHEMA__.__OBJECT__",
     },
     'VIEW': {
-        'list': """
-        SELECT n.nspname, c.relname AS objname, c.oid
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'v'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-        """,
-        'create': """
-        SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n' || pg_get_viewdef(__OID__, true)
-        """
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        'create': """SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n'
+            || pg_get_viewdef(__OID__, true)""",
+        'drop': "DROP VIEW __SCHEMA__.__OBJECT__",
     },
 }
 
@@ -291,12 +280,16 @@ def diff(conn, metadir):
         debug(err, 'ERROR')
         sys.exit(1)
 
+    stats = {}
     if ARGS.diffmethod == 'system':
-        return systemdiff(conn, metadir, ofd)
+        stats = systemdiff(conn, metadir, ofd)
     elif ARGS.diffmethod == 'simple':
-        return simplediff(conn, metadir, ofd)
+        stats = simplediff(conn, metadir, ofd)
     else:
-        return pgdiff(conn, metadir, ofd)
+        stats = pgdiff(conn, metadir, ofd)
+
+    debug(f'finished, stats: {stats}', 'INFO')
+    return stats
 
 
 def pgdiff(conn, metadir, ofd):
@@ -316,7 +309,7 @@ def pgdiff(conn, metadir, ofd):
         stats[objclass] = count
 
     ofd.close()
-    debug(f'finished, stats: {stats}', 'INFO')
+    return stats
 
 
 def simplediff(conn, metadir, ofd):
@@ -369,7 +362,7 @@ def pgdiff_objects(conn, metadir, objclass, ofd) -> int:
 
     # TODO: DRY (code duplication with explode_objects).
 
-    debug(f'processing {objclass} definitions', 'INFO')
+    debug(f'processing {objclass} definitions')
     count = 0
     with conn.cursor() as cur:
         sqlselect = OBJECTMETA[objclass]['list']
@@ -395,10 +388,22 @@ def pgdiff_objects(conn, metadir, objclass, ofd) -> int:
             fname = f'{objname}.sql'
             mdobj = Path(f'{fdir}/{fname}')
             if mdobj.exists():
-                debug(f'comparing {objclass} {nspname}.{objname} to {fdir}/{fname}')
-                # TODO: compare contents
+                # debug(f'comparing {objclass} {nspname}.{objname} to {fdir}/{fname}')
+                dblines = objdef.splitlines(keepends=True)
+                mdlines = mdobj.open().readlines()
+                db2md = difflib.context_diff(dblines, mdlines,
+                                             fromfile=f'{objclass} {nspname}.{objname}',
+                                             tofile=str(mdobj))
+                db2md = list(db2md)
+                if len(db2md) > 0:
+                    debug(f'{objclass} {nspname}.{objname} differs from {mdobj}', 'INFO')
+                    count += 1
+                    ofd.writelines(db2md)
+                else:
+                    debug(f'{objclass} {nspname}.{objname} is identical to {mdobj}', 'DEBUG')
             else:
-                # emit CREATE
+                debug(f'{objclass} {nspname}.{objname} does not exists as {mdobj}', 'INFO')
+                # emit CREATE?
                 ofd.write(objdef)
                 count += 1
 
@@ -464,7 +469,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
     Return counter.
     """
 
-    debug(f'processing {objclass} definitions', 'INFO')
+    debug(f'processing {objclass} definitions')
     count = 0
     with conn.cursor() as cur:
         sqlselect = OBJECTMETA[objclass]['list']
@@ -514,7 +519,7 @@ def implode_objects(conn, objclass: str) -> int:
 
     count = 0
 
-    debug(f'processing {objclass} definitions', 'INFO')
+    debug(f'processing {objclass} definitions')
 
     # DIR/TABLE/public
     for schema_dir in objdir.iterdir():
