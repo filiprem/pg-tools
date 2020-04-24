@@ -17,6 +17,7 @@ import time
 
 import psycopg2
 import psycopg2.errorcodes
+import psycopg2.extensions
 
 
 PROGNAME = 'pgboom'
@@ -110,7 +111,6 @@ OBJECTMETA = {
         WHERE n.oid = con.connamespace
         AND cr.oid = con.conrelid
         AND crn.oid = cr.relnamespace
-        AND con.contype NOT IN ('u')
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
@@ -121,7 +121,9 @@ OBJECTMETA = {
         FROM pg_class c, pg_namespace n, pg_index i
         WHERE n.oid = c.relnamespace AND c.relkind = 'i'
         AND i.indexrelid = c.oid AND NOT i.indisprimary
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND NOT EXISTS (SELECT 1 FROM pg_constraint con
+            WHERE con.conrelid = i.indrelid AND con.conindid = i.indexrelid) """,
         'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'""",
     },
     'VIEW': {
@@ -192,19 +194,19 @@ def main():
             debug(f'connection OK: user={usr}, db={db}, version={ver}')
 
     if ARGS.ACTION == 'explode':
-        explode(conn, ARGS.DIR)
+        res = explode(conn, ARGS.DIR)
     elif ARGS.ACTION == 'implode':
-        implode(conn, ARGS.DIR)
+        res = implode(conn, ARGS.DIR)
     elif ARGS.ACTION == 'diff':
-        diff(conn, ARGS.DIR)
+        res = diff(conn, ARGS.DIR)
     elif ARGS.ACTION == 'cat':
-        cat(ARGS.DIR)
+        res = cat(ARGS.DIR)
     elif ARGS.ACTION == 'test':
-        test()
+        res = test()
     else:
         raise NotImplementedError
 
-    debug(f'pgboom {ARGS.ACTION} finished')
+    debug(f'pgboom {ARGS.ACTION} finished, result: {res}')
 
 
 def verify_metadir(adir: str) -> bool:
@@ -258,7 +260,7 @@ def implode(conn, metadir):
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
             continue
-        count = implode_objects(conn, objclass)
+        count = implode_objects(conn, metadir, objclass)
         stats[objclass] = count
 
     debug(f'finished, stats: {stats}', 'INFO')
@@ -270,6 +272,9 @@ def diff(conn, metadir):
 
     The directory should have same structure as produced by `pgboom explode`.
     Results are saved to --File, in context diff format.
+
+    Returns:
+        Number of bytes written to --File.
     """
 
     verify_metadir(metadir)
@@ -294,6 +299,7 @@ def diff(conn, metadir):
                 debug(f'processing {objclass} definitions')
                 subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
                                 metasubdir], stdout=ofd, check=False)
+        return ofd.tell()
 
 
 def cat(metadir: str) -> dict:
@@ -331,10 +337,14 @@ def make_where():
             1. SQL WHERE string with %s-style placeholders
             2. list of parameters for the placeholders.
 
+    >>> save_schema = ARGS.Schema
+    >>> save_object = ARGS.Object
     >>> ARGS.Schema = '^myschema$'
     >>> ARGS.Object = '^myobjectprefix'
     >>> print(make_where())
     (' WHERE nspname ~ %s AND objname ~ %s', ['^myschema$', '^myobjectprefix'])
+    >>> ARGS.Schema = save_schema
+    >>> ARGS.Object = save_object
     """
 
     conditions = []
@@ -390,7 +400,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
     return count or None
 
 
-def implode_objects(conn, objclass: str) -> int:
+def implode_objects(conn, metadir: str, objclass: str) -> int:
     """Load objects from directory.
 
     Objects go to database (action=implode) or file (action=cat).
@@ -400,7 +410,7 @@ def implode_objects(conn, objclass: str) -> int:
     """
 
     # DIR/TABLE
-    objdir = pathlib.Path(ARGS.DIR, objclass)
+    objdir = pathlib.Path(metadir, objclass)
     if not (objdir.exists() and objdir.is_dir()):
         debug(f'directory {objdir} does not exist', 'INFO')
         return None
@@ -449,7 +459,7 @@ def is_expected_ddl(text: str) -> bool:
     except (UnicodeDecodeError, AttributeError):
         pass
 
-    return bool(re.match('(CREATE|ALTER TABLE) ', text))
+    return bool(re.match(r'(CREATE|ALTER TABLE)\b', text))
 
 
 def db_execute_ddl_file(conn, filename) -> bool:
@@ -523,8 +533,10 @@ def debug(message, level='DEBUG', stream=sys.stdout) -> None:
 
     >>> debug('elen silva lumen omentielvo', 'INFO', stream=sys.stdout) # doctest: +ELLIPSIS
     2... INFO ... elen silva lumen omentielvo
+    >>> save_debug = ARGS.debug
     >>> ARGS.debug = False
     >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
+    >>> ARGS.debug = save_debug
     """
 
     levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0}
@@ -547,7 +559,7 @@ def debug(message, level='DEBUG', stream=sys.stdout) -> None:
 
 
 def pgconn(dsn='', autocommit=False):
-    """Get PostgreSQL connection.
+    """Connects to PostgreSQL.
 
     Gets a new connection and sets application_name in the session.
 
@@ -835,6 +847,73 @@ FROM tabdef
         cur.execute(tabdefsql, {'taboid': taboid})
         defn = cur.fetchone()[0]
         return defn
+
+
+# test-only functions
+
+def test_exp_imp():
+    """Tests database reproduction with explode + implode.
+
+    Uses `pg_dump -s` as comparison method.
+
+    1. define temp names for dbs / files
+    >>> db1 = f'tempdb{int(time.time())}'
+    >>> db2 = f'{db1}_exp_imp'
+    >>> dsn1 = f'{ARGS.DSN} dbname={db1}'
+    >>> dsn2 = f'{ARGS.DSN} dbname={db2}'
+    >>> exdir = f'{tempfile.gettempdir()}/{db1}'
+    >>> file1 = f'{tempfile.gettempdir()}/{db1}.sql'
+    >>> file2 = f'{tempfile.gettempdir()}/{db2}.sql'
+
+    2. create dbs
+    >>> conn = pgconn(ARGS.DSN, autocommit=True)
+    >>> cur = conn.cursor()
+    >>> cur.execute(f'CREATE DATABASE {db1}')
+    >>> cur.execute(f'CREATE DATABASE {db2}')
+    >>> conn.close()
+
+    3. prepare db1
+    >>> conn = pgconn(dsn1, autocommit=True)
+    >>> cur = conn.cursor()
+    >>> cur.execute('''
+    ... CREATE SCHEMA s1
+    ... CREATE TABLE t1 (id integer unique)
+    ... CREATE VIEW v1 AS SELECT id FROM t1 WHERE id > 0
+    ... ''')
+    >>> conn.close()
+
+    4. explode db1
+    >>> conn = pgconn(dsn1)
+    >>> explode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
+    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
+     'SEQUENCE': None, 'TABLE': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    >>> conn.close()
+
+    5. implode db2
+    >>> conn = pgconn(dsn2)
+    >>> implode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
+    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
+     'SEQUENCE': None, 'TABLE': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    >>> conn.close()
+
+    6. make dumps of both
+    >>> proc1 = subprocess.run(['pg_dump', '-s', '-d', dsn1, '-f', file1,
+    ...                         '--no-owner', '--no-acl'], check=True)
+    >>> proc2 = subprocess.run(['pg_dump', '-s', '-d', dsn2, '-f', file2,
+    ...                         '--no-owner', '--no-acl'], check=True)
+
+    7. compare
+    >>> import filecmp
+    >>> filecmp.cmp(file1, file2, shallow=False)
+    True
+
+    8. cleanup
+    >>> conn = pgconn(ARGS.DSN, autocommit=True)
+    >>> cur = conn.cursor()
+    >>> cur.execute(f'DROP DATABASE {db1}')
+    >>> cur.execute(f'DROP DATABASE {db2}')
+    >>> conn.close()
+    """
 
 
 if __name__ == "__main__":
