@@ -123,10 +123,13 @@ OBJECTMETA = {
     },
     # This is separated from other CONSTRAINTs to work around PK->FK dependency problem.
     'PRIMARY_KEY': {
-        'list': """SELECT n.nspname, con.conname AS objname, con.oid
-        FROM pg_constraint con, pg_namespace n
+        'list': """SELECT n.nspname, con.conname AS objname, con.oid,
+            crn.nspname AS conrelnspname, cr.relname AS conrelname
+        FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
         WHERE con.contype = 'p'
         AND n.oid = con.connamespace
+        AND cr.oid = con.conrelid
+        AND crn.oid = cr.relnamespace
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
@@ -404,7 +407,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
             sqlselect, sqlfilter)
         cur.execute(sqlquery, sqlparams)
         for r in cur:
-            if objclass == 'CONSTRAINT':
+            if objclass in ['PRIMARY_KEY', 'CONSTRAINT']:
                 (nspname, objname, oid, conrelnspname, conrelname) = r
                 objdef = getobjdef(
                     conn,
@@ -650,7 +653,7 @@ def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str =
         objgen = re.sub('__OID__', str(oid), objgen)
         objgen = re.sub('__SCHEMA__', nspname, objgen)
         objgen = re.sub('__OBJECT__', objname, objgen)
-        if objclass == 'CONSTRAINT':
+        if objclass in ['PRIMARY_KEY', 'CONSTRAINT']:
             objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
             objgen = re.sub('__CONRELNAME__', conrelname, objgen)
             cur.execute(objgen)
@@ -907,6 +910,8 @@ def test_exp_imp():
     >>> cur.execute('''
     ... CREATE SCHEMA s1
     ... CREATE TABLE t1 (id serial unique)
+    ... CREATE TABLE t2 (id int primary key)
+    ... CREATE TABLE t3 (t2id int references t2)
     ... CREATE VIEW v1 AS SELECT id FROM t1 WHERE id > 0
     ... ''')
     >>> conn.close()
@@ -915,16 +920,16 @@ def test_exp_imp():
     >>> conn = pgconn(dsn1)
     >>> explode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
     {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': 1, 'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': None,
-     'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+     'SEQUENCE': 1, 'TABLE': 3, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': 1,
+     'CONSTRAINT': 2, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     5. implode db2
     >>> conn = pgconn(dsn2)
     >>> implode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
     {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': 1, 'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': None,
-     'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+     'SEQUENCE': 1, 'TABLE': 3, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': 1,
+     'CONSTRAINT': 2, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     6. make dumps of both
