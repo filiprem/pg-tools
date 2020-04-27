@@ -46,7 +46,7 @@ OBJECTMETA = {
         JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
         WHERE x.extname <> 'plpgsql' """,
         'create': """SELECT pg_catalog.format(
-            'CREATE EXTENSION %I SCHEMA %I;', x.extname, n.nspname)
+            'CREATE EXTENSION %I SCHEMA %I CASCADE;', x.extname, n.nspname)
         FROM pg_catalog.pg_extension x
         JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
         WHERE x.oid = __OID__""",
@@ -90,7 +90,7 @@ OBJECTMETA = {
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
             sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
             sp.cache_size, case when sp.cycle_option then ' CYCLE' else '' end)
-        FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(__OID__) sp
+        FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(c.oid) sp
         WHERE c.oid = __OID__ AND n.oid = c.relnamespace """,
     },
     'TABLE': {
@@ -103,6 +103,23 @@ OBJECTMETA = {
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
         'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
+    },
+    'SEQUENCE_OWNED_BY': {
+        # exploiting (documented) fact, that sequence can be owned by
+        # same-schema table only.
+        'list': """SELECT n.nspname, c.relname as objname, c.oid
+        FROM pg_class c2 JOIN pg_depend d2 ON c2.oid=d2.refobjid JOIN pg_attribute a2
+          ON (a2.attrelid=c2.oid AND a2.attnum=d2.refobjsubid)
+        JOIN pg_class c ON c.oid = d2.objid JOIN pg_namespace n on n.oid = c.relnamespace
+        WHERE d2.classid='pg_class'::regclass AND d2.refclassid='pg_class'::regclass
+        AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S' """,
+        'create': """SELECT format('ALTER SEQUENCE %I.%I OWNED BY %I.%I.%I;',
+            n.nspname, c.relname, n.nspname, c2.relname, a2.attname)
+        FROM pg_class c2 JOIN pg_depend d2 ON c2.oid=d2.refobjid JOIN pg_attribute a2
+          ON (a2.attrelid=c2.oid AND a2.attnum=d2.refobjsubid)
+        JOIN pg_class c ON c.oid = d2.objid JOIN pg_namespace n on n.oid = c.relnamespace
+        WHERE d2.classid='pg_class'::regclass AND d2.refclassid='pg_class'::regclass
+        AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S' AND c.oid = __OID__ """,
     },
     'CONSTRAINT': {
         'list': """SELECT n.nspname, con.conname AS objname, con.oid,
@@ -459,7 +476,7 @@ def is_expected_ddl(text: str) -> bool:
     except (UnicodeDecodeError, AttributeError):
         pass
 
-    return bool(re.match(r'(CREATE|ALTER TABLE)\b', text))
+    return bool(re.match(r'(CREATE|ALTER TABLE|ALTER SEQUENCE)\b', text))
 
 
 def db_execute_ddl_file(conn, filename) -> bool:
@@ -878,7 +895,7 @@ def test_exp_imp():
     >>> cur = conn.cursor()
     >>> cur.execute('''
     ... CREATE SCHEMA s1
-    ... CREATE TABLE t1 (id integer unique)
+    ... CREATE TABLE t1 (id serial unique)
     ... CREATE VIEW v1 AS SELECT id FROM t1 WHERE id > 0
     ... ''')
     >>> conn.close()
@@ -886,15 +903,15 @@ def test_exp_imp():
     4. explode db1
     >>> conn = pgconn(dsn1)
     >>> explode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': None, 'TABLE': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': 1,
+     'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     5. implode db2
     >>> conn = pgconn(dsn2)
     >>> implode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': None, 'TABLE': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': 1,
+     'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     6. make dumps of both
