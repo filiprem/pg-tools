@@ -121,11 +121,23 @@ OBJECTMETA = {
         WHERE d2.classid='pg_class'::regclass AND d2.refclassid='pg_class'::regclass
         AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S' AND c.oid = __OID__ """,
     },
+    # This is separated from other CONSTRAINTs to work around PK->FK dependency problem.
+    'PRIMARY_KEY': {
+        'list': """SELECT n.nspname, con.conname AS objname, con.oid
+        FROM pg_constraint con, pg_namespace n
+        WHERE con.contype = 'p'
+        AND n.oid = con.connamespace
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
+        'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
+            '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
+            pg_get_constraintdef(__OID__, true))""",
+    },
     'CONSTRAINT': {
         'list': """SELECT n.nspname, con.conname AS objname, con.oid,
             crn.nspname AS conrelnspname, cr.relname AS conrelname
         FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
-        WHERE n.oid = con.connamespace
+        WHERE con.contype <> 'p'
+        AND n.oid = con.connamespace
         AND cr.oid = con.conrelid
         AND crn.oid = cr.relnamespace
         AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
@@ -428,7 +440,7 @@ def implode_objects(conn, metadir: str, objclass: str) -> int:
     # DIR/TABLE
     objdir = pathlib.Path(metadir, objclass)
     if not (objdir.exists() and objdir.is_dir()):
-        debug(f'directory {objdir} does not exist', 'INFO')
+        debug(f'directory {objdir} does not exist')
         return None
 
     count = 0
@@ -902,15 +914,17 @@ def test_exp_imp():
     4. explode db1
     >>> conn = pgconn(dsn1)
     >>> explode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': 1,
-     'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
+     'SEQUENCE': 1, 'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': None,
+     'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     5. implode db2
     >>> conn = pgconn(dsn2)
     >>> implode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': 1,
-     'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
+     'SEQUENCE': 1, 'TABLE': 1, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': None,
+     'CONSTRAINT': 1, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     6. make dumps of both
