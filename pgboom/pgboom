@@ -289,9 +289,6 @@ def diff(conn, metadir):
 
     The directory should have same structure as produced by `pgboom explode`.
     Results are saved to --File, in context diff format.
-
-    Returns:
-        Number of bytes written to --File.
     """
 
     verify_metadir(metadir)
@@ -316,6 +313,8 @@ def diff(conn, metadir):
                 debug(f'processing {objclass} definitions')
                 subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
                                 metasubdir], stdout=ofd, check=False)
+
+        # Return number of bytes written to --File.
         return ofd.tell()
 
 

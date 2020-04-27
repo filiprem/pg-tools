@@ -33,44 +33,7 @@ Synopsis
 --------
 
 ```
-usage: pgboom [-h]
-              [--Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,CONSTRAINT,INDEX,VIEW}]
-              [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--debug]
-              ACTION DSN DIR
-
-The pgboom utility manipulates Postgres metadata.
-
-For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
-
-positional arguments:
-  ACTION                explode: Saves object definitions (SQL CREATE statements) from Postgres to directory.
-                            Each object goes into separate file, DIR/<CLASS>/<schema>/<object>.sql.
-                        
-                        implode: Loads object definitions from directory to Postgres.
-                            Does not overwrite any pre-existing objects.
-                        
-                        diff: Compares object definitions between database and directory, using system `diff` command.
-                            The directory should have same structure as produced by `pgboom explode`.
-                            Results are saved to --File, in context diff format.
-                        
-                        cat: Does the same as implode, but concatenates into --File, not database.
-                        
-                        test: Performs a built-in test (for developers).
-  DSN                   PostgreSQL data source in 'key=value' format
-  DIR                   Destination/source directory
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,CONSTRAINT,INDEX,VIEW}
-                        Type of objects to extract/load
-  --Schema SCHEMA, -S SCHEMA
-                        Database schema name regex
-  --Object OBJECT, -O OBJECT
-                        Database object name regex
-  --File FILE, -F FILE  Output file for `cat` and `diff` actions
-  --debug, --verbose, -v
-                        Set verbose debugging on
-
+__USAGE__
 ```
 
 Examples
