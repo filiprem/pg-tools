@@ -108,155 +108,155 @@ Example of `diff` functionality:
 
 1. Prepare test database:
 ```
-    $ dropdb test
-    $ createdb test
-    $ pgbench test -i
-    dropping old tables...
-    NOTICE:  table "pgbench_accounts" does not exist, skipping
-    NOTICE:  table "pgbench_branches" does not exist, skipping
-    NOTICE:  table "pgbench_history" does not exist, skipping
-    NOTICE:  table "pgbench_tellers" does not exist, skipping
-    creating tables...
-    generating data...
-    100000 of 100000 tuples (100%) done (elapsed 0.08 s, remaining 0.00 s)
-    vacuuming...
-    creating primary keys...
-    done.
+$ dropdb test
+$ createdb test
+$ pgbench test -i
+dropping old tables...
+NOTICE:  table "pgbench_accounts" does not exist, skipping
+NOTICE:  table "pgbench_branches" does not exist, skipping
+NOTICE:  table "pgbench_history" does not exist, skipping
+NOTICE:  table "pgbench_tellers" does not exist, skipping
+creating tables...
+generating data...
+100000 of 100000 tuples (100%) done (elapsed 0.08 s, remaining 0.00 s)
+vacuuming...
+creating primary keys...
+done.
 ```
 2. Explode test database to directory:
 ```
-    $ rm -rf /tmp/test
-    $ pgboom explode 'dbname=test' /tmp/test
-    2020-04-27 23:45:35 INFO explode finished, stats: {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': None, 'TABLE': 4, 'SEQUENCE_OWNED_BY': None, 'PRIMARY_KEY': None, 'CONSTRAINT': None, 'INDEX': None, 'VIEW': None}
+$ rm -rf /tmp/test
+$ pgboom explode 'dbname=test' /tmp/test
+2020-04-27 23:45:35 INFO explode finished, stats: {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': None, 'TABLE': 4, 'SEQUENCE_OWNED_BY': None, 'PRIMARY_KEY': None, 'CONSTRAINT': None, 'INDEX': None, 'VIEW': None}
 ```
 3. Modify the test database:
 ```
-    $ psql -X test -c 'create schema s0'
-    CREATE SCHEMA
-    $ psql -X test -c 'create view s0.v1 as select * from pgbench_branches'
-    CREATE VIEW
-    $ psql -X test -c 'alter table pgbench_branches add junk integer'
-    ALTER TABLE
-    $ psql -X test -c 'drop table pgbench_history'
-    DROP TABLE
+$ psql -X test -c 'create schema s0'
+CREATE SCHEMA
+$ psql -X test -c 'create view s0.v1 as select * from pgbench_branches'
+CREATE VIEW
+$ psql -X test -c 'alter table pgbench_branches add junk integer'
+ALTER TABLE
+$ psql -X test -c 'drop table pgbench_history'
+DROP TABLE
 ```
 4. Use `pgboom diff` to compare:
 ```
-    $ pgboom diff 'dbname=test' /tmp/test --File diff.txt
-    2020-04-27 23:46:07 INFO diff exploding database to /tmp/tmpemalxdg2
-    2020-04-27 23:46:07 INFO explode finished, stats: {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': None, 'TABLE': 4, 'SEQUENCE_OWNED_BY': None, 'PRIMARY_KEY': None, 'CONSTRAINT': None, 'INDEX': None, 'VIEW': None}
-    2020-04-27 23:46:07 INFO diff comparing /tmp/tmpemalxdg2 to /tmp/test
+$ pgboom diff 'dbname=test' /tmp/test --File diff.txt
+2020-04-27 23:46:07 INFO diff exploding database to /tmp/tmpemalxdg2
+2020-04-27 23:46:07 INFO explode finished, stats: {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None, 'SEQUENCE': None, 'TABLE': 4, 'SEQUENCE_OWNED_BY': None, 'PRIMARY_KEY': None, 'CONSTRAINT': None, 'INDEX': None, 'VIEW': None}
+2020-04-27 23:46:07 INFO diff comparing /tmp/tmpemalxdg2 to /tmp/test
 ```
 5. View report of differences (context diff):
 ```
-    $ more diff.txt
+$ more diff.txt
 ```
 ```diff
-    diff -r -C3 -N /tmp/tmpkfanla1y/SCHEMA/s0/s0.sql /tmp/test/SCHEMA/s0/s0.sql
-    *** /tmp/tmpkfanla1y/SCHEMA/s0/s0.sql	2020-04-27 23:47:07.967715467 +0200
-    --- /tmp/test/SCHEMA/s0/s0.sql	1970-01-01 01:00:00.000000000 +0100
-    ***************
-    *** 1 ****
-    - CREATE SCHEMA s0;
-    --- 0 ----
-    diff -r -C3 -N /tmp/tmpkfanla1y/TABLE/public/pgbench_branches.sql /tmp/test/TABLE/public/pgbench_branches.sql
-    *** /tmp/tmpkfanla1y/TABLE/public/pgbench_branches.sql	2020-04-27 23:47:07.979715569 +0200
-    --- /tmp/test/TABLE/public/pgbench_branches.sql	2020-04-27 23:45:35.966960723 +0200
-    ***************
-    *** 1,6 ****
-    CREATE TABLE public.pgbench_branches (
-        bid integer NOT NULL,
-        bbalance integer,
-    !     filler character(88),
-    !     junk integer
-    ) WITH (fillfactor=100);
-    --- 1,5 ----
-    CREATE TABLE public.pgbench_branches (
-        bid integer NOT NULL,
-        bbalance integer,
-    !     filler character(88)
-    ) WITH (fillfactor=100);
-    diff -r -C3 -N /tmp/tmpkfanla1y/TABLE/public/pgbench_history.sql /tmp/test/TABLE/public/pgbench_history.sql
-    *** /tmp/tmpkfanla1y/TABLE/public/pgbench_history.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/TABLE/public/pgbench_history.sql	2020-04-27 23:45:35.966960723 +0200
-    ***************
-    *** 0 ****
-    --- 1,8 ----
-    + CREATE TABLE public.pgbench_history (
-    +     tid integer,
-    +     bid integer,
-    +     aid integer,
-    +     delta integer,
-    +     mtime timestamp without time zone,
-    +     filler character(22)
-    + );
-    diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_accounts_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_accounts_pkey.sql
-    *** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_accounts_pkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/PRIMARY_KEY/public/pgbench_accounts_pkey.sql	2020-04-27 23:42:26.993598819 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_accounts ADD CONSTRAINT pgbench_accounts_pkey PRIMARY KEY (aid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_branches_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_branches_pkey.sql
-    *** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_branches_pkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/PRIMARY_KEY/public/pgbench_branches_pkey.sql	2020-04-27 23:42:26.993598819 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_branches ADD CONSTRAINT pgbench_branches_pkey PRIMARY KEY (bid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_tellers_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_tellers_pkey.sql
-    *** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_tellers_pkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/PRIMARY_KEY/public/pgbench_tellers_pkey.sql	2020-04-27 23:42:26.993598819 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_tellers ADD CONSTRAINT pgbench_tellers_pkey PRIMARY KEY (tid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
-    *** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_accounts ADD CONSTRAINT pgbench_accounts_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_aid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
-    *** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_aid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_aid_fkey FOREIGN KEY (aid) REFERENCES pgbench_accounts(aid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
-    *** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_tid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
-    *** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_tid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_tid_fkey FOREIGN KEY (tid) REFERENCES pgbench_tellers(tid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
-    *** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
-    --- /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
-    ***************
-    *** 0 ****
-    --- 1 ----
-    + ALTER TABLE public.pgbench_tellers ADD CONSTRAINT pgbench_tellers_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
-    diff -r -C3 -N /tmp/tmpkfanla1y/VIEW/s0/v1.sql /tmp/test/VIEW/s0/v1.sql
-    *** /tmp/tmpkfanla1y/VIEW/s0/v1.sql	2020-04-27 23:47:07.987715636 +0200
-    --- /tmp/test/VIEW/s0/v1.sql	1970-01-01 01:00:00.000000000 +0100
-    ***************
-    *** 1,5 ****
-    - CREATE VIEW s0.v1 AS 
-    -  SELECT pgbench_branches.bid,
-    -     pgbench_branches.bbalance,
-    -     pgbench_branches.filler
-    -    FROM pgbench_branches;
-    --- 0 ----
+diff -r -C3 -N /tmp/tmpkfanla1y/SCHEMA/s0/s0.sql /tmp/test/SCHEMA/s0/s0.sql
+*** /tmp/tmpkfanla1y/SCHEMA/s0/s0.sql	2020-04-27 23:47:07.967715467 +0200
+--- /tmp/test/SCHEMA/s0/s0.sql	1970-01-01 01:00:00.000000000 +0100
+***************
+*** 1 ****
+- CREATE SCHEMA s0;
+--- 0 ----
+diff -r -C3 -N /tmp/tmpkfanla1y/TABLE/public/pgbench_branches.sql /tmp/test/TABLE/public/pgbench_branches.sql
+*** /tmp/tmpkfanla1y/TABLE/public/pgbench_branches.sql	2020-04-27 23:47:07.979715569 +0200
+--- /tmp/test/TABLE/public/pgbench_branches.sql	2020-04-27 23:45:35.966960723 +0200
+***************
+*** 1,6 ****
+CREATE TABLE public.pgbench_branches (
+    bid integer NOT NULL,
+    bbalance integer,
+!     filler character(88),
+!     junk integer
+) WITH (fillfactor=100);
+--- 1,5 ----
+CREATE TABLE public.pgbench_branches (
+    bid integer NOT NULL,
+    bbalance integer,
+!     filler character(88)
+) WITH (fillfactor=100);
+diff -r -C3 -N /tmp/tmpkfanla1y/TABLE/public/pgbench_history.sql /tmp/test/TABLE/public/pgbench_history.sql
+*** /tmp/tmpkfanla1y/TABLE/public/pgbench_history.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/TABLE/public/pgbench_history.sql	2020-04-27 23:45:35.966960723 +0200
+***************
+*** 0 ****
+--- 1,8 ----
++ CREATE TABLE public.pgbench_history (
++     tid integer,
++     bid integer,
++     aid integer,
++     delta integer,
++     mtime timestamp without time zone,
++     filler character(22)
++ );
+diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_accounts_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_accounts_pkey.sql
+*** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_accounts_pkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/PRIMARY_KEY/public/pgbench_accounts_pkey.sql	2020-04-27 23:42:26.993598819 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_accounts ADD CONSTRAINT pgbench_accounts_pkey PRIMARY KEY (aid);
+diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_branches_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_branches_pkey.sql
+*** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_branches_pkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/PRIMARY_KEY/public/pgbench_branches_pkey.sql	2020-04-27 23:42:26.993598819 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_branches ADD CONSTRAINT pgbench_branches_pkey PRIMARY KEY (bid);
+diff -r -C3 -N /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_tellers_pkey.sql /tmp/test/PRIMARY_KEY/public/pgbench_tellers_pkey.sql
+*** /tmp/tmpkfanla1y/PRIMARY_KEY/public/pgbench_tellers_pkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/PRIMARY_KEY/public/pgbench_tellers_pkey.sql	2020-04-27 23:42:26.993598819 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_tellers ADD CONSTRAINT pgbench_tellers_pkey PRIMARY KEY (tid);
+diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql
+*** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/CONSTRAINT/public/pgbench_accounts_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_accounts ADD CONSTRAINT pgbench_accounts_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
+diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_aid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql
+*** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_aid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/CONSTRAINT/public/pgbench_history_aid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_aid_fkey FOREIGN KEY (aid) REFERENCES pgbench_accounts(aid);
+diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql
+*** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/CONSTRAINT/public/pgbench_history_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
+diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_tid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql
+*** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_history_tid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/CONSTRAINT/public/pgbench_history_tid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_history ADD CONSTRAINT pgbench_history_tid_fkey FOREIGN KEY (tid) REFERENCES pgbench_tellers(tid);
+diff -r -C3 -N /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql
+*** /tmp/tmpkfanla1y/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql	1970-01-01 01:00:00.000000000 +0100
+--- /tmp/test/CONSTRAINT/public/pgbench_tellers_bid_fkey.sql	2020-04-27 23:42:26.997598845 +0200
+***************
+*** 0 ****
+--- 1 ----
++ ALTER TABLE public.pgbench_tellers ADD CONSTRAINT pgbench_tellers_bid_fkey FOREIGN KEY (bid) REFERENCES pgbench_branches(bid);
+diff -r -C3 -N /tmp/tmpkfanla1y/VIEW/s0/v1.sql /tmp/test/VIEW/s0/v1.sql
+*** /tmp/tmpkfanla1y/VIEW/s0/v1.sql	2020-04-27 23:47:07.987715636 +0200
+--- /tmp/test/VIEW/s0/v1.sql	1970-01-01 01:00:00.000000000 +0100
+***************
+*** 1,5 ****
+- CREATE VIEW s0.v1 AS 
+-  SELECT pgbench_branches.bid,
+-     pgbench_branches.bbalance,
+-     pgbench_branches.filler
+-    FROM pgbench_branches;
+--- 0 ----
 ```
 
 Run a built-in test:
