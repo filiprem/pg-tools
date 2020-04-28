@@ -222,11 +222,11 @@ def main():
         logger.debug("testing database connection")
         try:
             conn = pgconn(ARGS.DSN)
-        except BaseException:
-            logger.error("connection failed. You are supposed to provide connection"
-                         " parameters via environment variables [PGHOST, PGDATABASE etc],"
-                         " as specified in www.postgresql.org/docs/current/libpq-envars.html")
-            raise
+        except psycopg2.Error:
+            logger.exception("connection failed. You are supposed to provide connection\n"
+                             "parameters via environment variables [PGHOST, PGDATABASE etc],\n"
+                             "as specified in www.postgresql.org/docs/current/libpq-envars.html")
+            sys.exit(1)
 
         with conn.cursor() as cur:
             cur.execute('SELECT current_database(), current_user, version()')
@@ -274,7 +274,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
         pathlib.Path(metadir).mkdir(parents=True, exist_ok=True)
     except OSError:
         logger.error('could not access output directory %s', metadir)
-        raise
+        sys.exit(1)
 
     stats = {}
 
@@ -545,7 +545,7 @@ def db_execute_ddl_file(conn, filename) -> bool:
             if not is_expected_ddl(status):
                 raise UserWarning('Aborting transaction '
                                   f'due to "{status}" while executing "{file}"')
-        except psycopg2.errors.ProgrammingError as e:
+        except psycopg2.ProgrammingError as e:
             errcode = psycopg2.errorcodes.lookup(e.pgcode)
             msg = e.diag.message_primary
             # detail = e.diag.message_detail
