@@ -7,13 +7,12 @@ For details, see https://github.com/filiprem/pg-tools/tree/master/pgboom.
 
 import argparse
 import doctest
-import inspect
+import logging
 import pathlib
 import re
 import subprocess
 import sys
 import tempfile
-import time
 
 import psycopg2
 import psycopg2.errorcodes
@@ -170,6 +169,13 @@ OBJECTMETA = {
     },
 }
 
+logging.basicConfig(
+    format='%(asctime)s %(levelname)s %(funcName)s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    level=logging.INFO)
+
+logger = logging.getLogger()
+
 
 def main():
 
@@ -206,24 +212,26 @@ def main():
     global ARGS
     ARGS = parser.parse_args()
 
-    debug(f'pgboom {ARGS.ACTION} starting')
+    if ARGS.debug:
+        logger.setLevel(logging.DEBUG)
+
+    logger.debug('pgboom %s starting', ARGS.ACTION)
 
     conn = None
     if ARGS.ACTION != 'cat':
-        debug("testing database connection")
+        logger.debug("testing database connection")
         try:
             conn = pgconn(ARGS.DSN)
         except BaseException:
-            debug("connection failed. You are supposed to provide connection"
-                  " parameters via environment variables [PGHOST, PGDATABASE etc],"
-                  " as specified in https://www.postgresql.org/docs/current/libpq-envars.html",
-                  'ERROR')
+            logger.error("connection failed. You are supposed to provide connection"
+                         " parameters via environment variables [PGHOST, PGDATABASE etc],"
+                         " as specified in www.postgresql.org/docs/current/libpq-envars.html")
             raise
 
         with conn.cursor() as cur:
             cur.execute('SELECT current_database(), current_user, version()')
             (db, usr, ver) = cur.fetchone()
-            debug(f'connection OK: user={usr}, db={db}, version={ver}')
+            logger.debug('connection OK: user=%s, db=%s, version=%s', usr, db, ver)
 
     if ARGS.ACTION == 'explode':
         res = explode(conn, ARGS.DIR)
@@ -238,7 +246,7 @@ def main():
     else:
         raise NotImplementedError
 
-    debug(f'pgboom {ARGS.ACTION} finished, result: {res}')
+    logger.debug('pgboom %s finished, result: %s', ARGS.ACTION, res)
 
 
 def verify_metadir(adir: str) -> bool:
@@ -247,11 +255,11 @@ def verify_metadir(adir: str) -> bool:
 
     p = pathlib.Path(adir)
     if not (p.exists() and p.is_dir()):
-        debug(f'directory {adir} does not exist', 'ERROR')
+        logger.error('directory %s does not exist', adir)
         sys.exit(2)
     subdirs = [x.name for x in p.iterdir() if x.is_dir()]
     if set(subdirs).isdisjoint(OBJECTMETA.keys()):
-        debug(f'directory {adir} does not look like metadata directory', 'ERROR')
+        logger.error('directory %s does not look like metadata directory', adir)
         sys.exit(2)
     return True
 
@@ -265,7 +273,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     try:
         pathlib.Path(metadir).mkdir(parents=True, exist_ok=True)
     except OSError:
-        debug(f'could not access output directory {metadir}', 'ERROR')
+        logger.error('could not access output directory %s', metadir)
         raise
 
     stats = {}
@@ -276,7 +284,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
         count = explode_objects(conn, metadir, objclass)
         stats[objclass] = count
 
-    debug(f'finished, stats: {stats}', 'INFO')
+    logger.info('finished, stats: %s', stats)
     return stats
 
 
@@ -295,7 +303,7 @@ def implode(conn, metadir):
         count = implode_objects(conn, metadir, objclass)
         stats[objclass] = count
 
-    debug(f'finished, stats: {stats}', 'INFO')
+    logger.info('finished, stats: %s', stats)
     return stats
 
 
@@ -309,23 +317,23 @@ def diff(conn, metadir):
     verify_metadir(metadir)
 
     if ARGS.File is None:
-        debug('The `diff` action requires --File option', 'ERROR')
+        logger.error('The `diff` action requires --File option')
         sys.exit(1)
     try:
         ofd = open(ARGS.File, mode='w')
-    except OSError as err:
-        debug(err, 'ERROR')
+    except OSError:
+        logger.exception('Cannot open --File')
         sys.exit(1)
 
     with tempfile.TemporaryDirectory() as dbdir:
-        debug(f'exploding database to {dbdir}', 'INFO')
+        logger.info('exploding database to %s', dbdir)
         explode(conn, dbdir)
-        debug(f'comparing {dbdir} to {metadir}', 'INFO')
+        logger.info('comparing %s to %s', dbdir, metadir)
         for objclass in OBJECTMETA:
             dbsubdir = pathlib.Path(dbdir, objclass)
             metasubdir = pathlib.Path(metadir, objclass)
             if dbsubdir.exists() or metasubdir.exists():
-                debug(f'processing {objclass} definitions')
+                logger.debug('processing %s definitions', objclass)
                 subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
                                 metasubdir], stdout=ofd, check=False)
 
@@ -344,8 +352,8 @@ def cat(metadir: str) -> dict:
         ofd = open(ARGS.File, mode='w')
         ofd.write('SET check_function_bodies TO off;\n\n')
         ofd.close()
-    except OSError as err:
-        debug(err, 'ERROR')
+    except OSError:
+        logger.exception('Cannot open --File')
         sys.exit(1)
     # implemented as part of implode.
     return implode(None, metadir)
@@ -355,8 +363,8 @@ def test():
     """Performs a built-in test (for developers).
     """
 
-    debug("entering test code - please ignore ERROR messages "
-          "unless you see specific tests failing", 'INFO')
+    logger.info("entering test code - please ignore ERROR messages "
+                "unless you see specific tests failing")
     return doctest.testmod(verbose=ARGS.debug)
 
 
@@ -398,7 +406,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
     Return counter.
     """
 
-    debug(f'processing {objclass} definitions')
+    logger.debug('processing %s definitions', objclass)
     count = 0
     with conn.cursor() as cur:
         sqlselect = OBJECTMETA[objclass]['list']
@@ -422,7 +430,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
                 objdef = getobjdef(conn, objclass, oid, nspname, objname)
             fdir = f'{metadir}/{objclass}/{nspname}'
             fname = f'{objname}.sql'
-            debug(f'saving {fdir}/{fname}')
+            logger.debug('saving %s/%s', fdir, fname)
             pathlib.Path(fdir).mkdir(parents=True, exist_ok=True)
             with open(f'{fdir}/{fname}', 'w') as of:
                 of.write(objdef)
@@ -443,12 +451,12 @@ def implode_objects(conn, metadir: str, objclass: str) -> int:
     # DIR/TABLE
     objdir = pathlib.Path(metadir, objclass)
     if not (objdir.exists() and objdir.is_dir()):
-        debug(f'directory {objdir} does not exist')
+        logger.debug('directory %s does not exist', objdir)
         return None
 
     count = 0
 
-    debug(f'processing {objclass} definitions')
+    logger.debug('processing %s definitions', objclass)
 
     # DIR/TABLE/public
     for schema_dir in objdir.iterdir():
@@ -456,14 +464,14 @@ def implode_objects(conn, metadir: str, objclass: str) -> int:
             continue
         schema = schema_dir.name
         if ARGS.Schema and not re.search(ARGS.Schema, schema):
-            debug(f'ignoring {schema_dir} due to --Schema filter')
+            logger.debug('ignoring %s due to --Schema filter', schema_dir)
             continue
         # DIR/TABLE/public/users.sql
         for objectfile in schema_dir.glob('*.sql'):
-            debug(f'processing {objectfile}')
+            logger.debug('processing %s', objectfile)
             name = objectfile.stem
             if ARGS.Object and not re.search(ARGS.Object, name):
-                debug(f'ignoring {objectfile} due to --Object filter')
+                logger.debug('ignoring %s due to --Object filter', objectfile)
                 continue
 
             elif ARGS.ACTION == 'cat':
@@ -525,8 +533,8 @@ def db_execute_ddl_file(conn, filename) -> bool:
 
     text = file.read_text()
     if not is_expected_ddl(text):
-        debug(f'unexpected content in "{file}"', 'ERROR')
-        debug(f'unexpected content: {text}')
+        logger.error('unexpected content in %s', file)
+        logger.debug('unexpected content: %s', text)
         return False
     with conn.cursor() as cur:
         # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
@@ -542,51 +550,11 @@ def db_execute_ddl_file(conn, filename) -> bool:
             msg = e.diag.message_primary
             # detail = e.diag.message_detail
             # hint = e.diag.message_hint
-            debug(f'{errcode} when executing {file}: {msg}', 'ERROR')
+            logger.error('%s when executing %s: %s', errcode, file, msg)
             return False
         finally:
             cur.execute('END')
     return True
-
-
-def debug(message, level='DEBUG', stream=sys.stdout) -> None:
-    """Emits a debug message.
-
-    Args:
-        message: message text.
-        level: textual severity level
-        stream: destination IO stream
-
-    Some doctest notes:
-        1. Need to specify stream, because doctest hijacks stdout before running.
-        2. Due to leading '2' the test will start failing in year 3000.
-        Hopefully, nobody will care then.
-
-    >>> debug('elen silva lumen omentielvo', 'INFO', stream=sys.stdout) # doctest: +ELLIPSIS
-    2... INFO ... elen silva lumen omentielvo
-    >>> save_debug = ARGS.debug
-    >>> ARGS.debug = False
-    >>> debug('"Dina" in Eldarin means "be silent".', stream=sys.stdout)
-    >>> ARGS.debug = save_debug
-    """
-
-    levels = {'ERROR': 10, 'INFO': 5, 'DEBUG': 0}
-    if levels.get(level) is None:
-        raise ValueError('wrong value for debug level: {}'.format(level))
-
-    emit_level = levels['INFO']
-    if ARGS.debug:
-        emit_level = levels['DEBUG']
-
-    if levels.get(level) < emit_level:
-        return
-
-    caller = inspect.stack()[1][3]
-
-    ts = time.strftime("%F %X", time.localtime())
-
-    stream.write(f'{ts} {level} {caller} {message}\n')
-    stream.flush()
 
 
 def pgconn(dsn='', autocommit=False):
@@ -889,6 +857,7 @@ def test_exp_imp():
     Uses `pg_dump -s` as comparison method.
 
     1. define temp names for dbs / files
+    >>> import time
     >>> db1 = f'tempdb{int(time.time())}'
     >>> db2 = f'{db1}_exp_imp'
     >>> dsn1 = f'{ARGS.DSN} dbname={db1}'
