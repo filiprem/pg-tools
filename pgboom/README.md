@@ -35,7 +35,7 @@ Usage
 
 ```
 usage: pgboom [-h]
-              [--Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,INDEX,VIEW}]
+              [--Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,PARTITIONED_TABLE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,PARTITIONED_INDEX,INDEX,VIEW}]
               [--Schema SCHEMA] [--Object OBJECT] [--File FILE] [--debug]
               ACTION DSN DIR
 
@@ -62,7 +62,7 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  --Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,INDEX,VIEW}, -C {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,INDEX,VIEW}
+  --Class {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,PARTITIONED_TABLE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,PARTITIONED_INDEX,INDEX,VIEW}, -C {SCHEMA,EXTENSION,FUNCTION,AGGREGATE,SEQUENCE,PARTITIONED_TABLE,TABLE,SEQUENCE_OWNED_BY,PRIMARY_KEY,CONSTRAINT,PARTITIONED_INDEX,INDEX,VIEW}
                         Type of objects to extract/load
   --Schema SCHEMA, -S SCHEMA
                         Database schema name regex
@@ -273,21 +273,28 @@ $ pgboom test 'dbname=test' /tmp/test
 Known issues
 ------------
 
-* Not all object types are supported.
-* ACLs (ownership, GRANTs) are not supported.
 * PostgreSQL versions older than 11 are not supported.
+* Not all object types are supported. This includes (among others):
+  * Users and roles, (CREATE ROLE commands),
+  * Privileges (GRANT commands),
+  * Object ownership (ALTER ... OWNER),
+  * User-defined types (CREATE TYPE),
+  * User-defined operators (CREATE OPERATOR),
+  * Row security policies (CREATE POLICY),
+  * Triggers (CREATE TRIGGER),
+  * Rules (CREATE RULE),
+  * Tablespaces.
 * The implode action does not care about dependencies and will most probably
   fail on a pre-populated database.
-* WARNING! On implode, file content is not validated. It is your responsibility
-  to use trusted data source.
-* WARNING! On implode, there is almost no SQL validation and if there are
-  multiple statements in a file, they will all be executed.
-* Many object properties are not reflected on explode. For example, `LEAKPROOF`
-  attribute for functions is not exploded.
-* Schema / object names are not always properly quoted. This applies to VIEWs
-  and maybe more.
+* WARNING! On implode, file content is only minimally validated.
+  * It is your responsibility to use trusted directory as metadata source.
+  * If there are multiple statements in a file, they will all be executed.
 * The `diff` action produces only a context diff, nothing like a SQL patch; for
   this type of schema comparison tool, please check apgdiff project. 
+* On `explode`, partition constraints and indexes are exported, even if they
+  are inherited from master table. This may cause harmless ERRORs on implode.
+* Schema / object names are not always properly quoted. This applies to VIEWs
+  and maybe more.
 
 
 Bugs

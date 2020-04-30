@@ -92,6 +92,17 @@ OBJECTMETA = {
         FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(c.oid) sp
         WHERE c.oid = __OID__ AND n.oid = c.relnamespace """,
     },
+    'PARTITIONED_TABLE': {
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'p'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND c.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
+        # this is overriden later (see gettabledef method).
+        # we just anticipate future built-in function name here.
+        'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
+    },
     'TABLE': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
@@ -146,6 +157,18 @@ OBJECTMETA = {
         'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
             pg_get_constraintdef(__OID__, true))""",
+    },
+    'PARTITIONED_INDEX': {
+        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+        FROM pg_class c, pg_namespace n, pg_index i
+        WHERE n.oid = c.relnamespace AND c.relkind = 'I'
+        AND i.indexrelid = c.oid AND NOT i.indisprimary
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND NOT EXISTS (SELECT 1 FROM pg_constraint con
+            WHERE con.conrelid = i.indrelid AND con.conindid = i.indexrelid) """,
+        # removing the ONLY keyword to revive partitioned indexes
+        'create': """SELECT regexp_replace(pg_get_indexdef(__OID__, 0, true),
+            '[[:<:]]ONLY[[:space:]]+', '') || ';'""",
     },
     'INDEX': {
         'list': """SELECT n.nspname, c.relname AS objname, c.oid
@@ -459,7 +482,7 @@ def implode_objects(conn, metadir: str, objclass: str) -> int:
     logger.debug('processing %s definitions', objclass)
 
     # DIR/TABLE/public
-    for schema_dir in objdir.iterdir():
+    for schema_dir in sorted(objdir.iterdir()):
         if not schema_dir.is_dir():
             continue
         schema = schema_dir.name
@@ -467,7 +490,7 @@ def implode_objects(conn, metadir: str, objclass: str) -> int:
             logger.debug('ignoring %s due to --Schema filter', schema_dir)
             continue
         # DIR/TABLE/public/users.sql
-        for objectfile in schema_dir.glob('*.sql'):
+        for objectfile in sorted(schema_dir.glob('*.sql')):
             logger.debug('processing %s', objectfile)
             name = objectfile.stem
             if ARGS.Object and not re.search(ARGS.Object, name):
@@ -626,7 +649,7 @@ def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str =
             objgen = re.sub('__CONRELNAME__', conrelname, objgen)
             cur.execute(objgen)
             objdef = cur.fetchone()[0]
-        elif objclass == 'TABLE':
+        elif objclass in ['PARTITIONED_TABLE', 'TABLE']:
             objdef = gettabledef(conn, oid)
         elif objclass == 'AGGREGATE':
             objdef = getaggdef(conn, oid)
@@ -767,12 +790,21 @@ tabdef AS (
 )
 SELECT
     format(
-        E'CREATE%%s TABLE %%I.%%I (\n    %%s\n)%%s;',
+        'CREATE%%s TABLE %%I.%%I%%s%%s%%s;',
         case tabdef.relpersistence when 't' then ' TEMP' when 'u' then ' UNLOGGED' else '' end,
         tabdef.nspname,
         tabdef.relname,
-        tabdef.cols_create_sql,
-        case when tabdef.relopts <> '' then format(' WITH (%%s)', tabdef.relopts) else '' end
+        coalesce(
+            (SELECT format(E'\n    PARTITION OF %%I.%%I %%s\n', pn.nspname, pc.relname,
+                pg_get_expr(c.relpartbound, c.oid))
+                FROM pg_class c JOIN pg_inherits i ON c.oid = i.inhrelid
+                JOIN pg_class pc ON pc.oid = i.inhparent
+                JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                WHERE c.oid = %(taboid)s),
+            format(E' (\n    %%s\n)', tabdef.cols_create_sql)
+        ),
+        case when tabdef.relopts <> '' then format(' WITH (%%s)', tabdef.relopts) else '' end,
+        coalesce(E'\nPARTITION BY '||pg_get_partkeydef(%(taboid)s), '')
     ) as table_create_sql
 FROM tabdef
             """
@@ -835,12 +867,14 @@ tabdef AS (
 )
 SELECT
     format(
-        E'CREATE%%s TABLE %%I.%%I (\n    %%s\n)%%s;',
+        E'CREATE%%s TABLE %%I.%%I (\n    %%s\n)%%s%%s;',
         case tabdef.relpersistence when 't' then ' TEMP' when 'u' then ' UNLOGGED' else '' end,
         tabdef.nspname,
         tabdef.relname,
         tabdef.cols_create_sql,
-        case when tabdef.relopts <> '' then format(' WITH (%%s)', tabdef.relopts) else '' end
+        case when tabdef.relopts <> '' then format(' WITH (%%s)',
+        tabdef.relopts) else '' end,
+        coalesce(E'\nPARTITION BY '||pg_get_partkeydef(%(taboid)s), '')
     ) as table_create_sql
 FROM tabdef
             """
@@ -878,27 +912,33 @@ def test_exp_imp():
     >>> cur = conn.cursor()
     >>> cur.execute('''
     ... CREATE SCHEMA s1
-    ... CREATE TABLE t1 (id serial unique)
+    ... CREATE TABLE t1 (id serial unique, payload text) PARTITION BY RANGE (id)
+    ... CREATE INDEX t1_payload_idx ON t1 (payload)
+    ... CREATE TABLE t1_pd PARTITION OF t1 DEFAULT
+    ... CREATE TABLE t1_p0 PARTITION OF t1 FOR VALUES FROM (0) TO (999999)
     ... CREATE TABLE t2 (id int primary key)
     ... CREATE TABLE t3 (t2id int references t2)
     ... CREATE VIEW v1 AS SELECT id FROM t1 WHERE id > 0
+    ... ''')
+    >>> cur.execute('''
+    ... CREATE FUNCTION f1() RETURNS void LANGUAGE plpgsql AS 'BEGIN END' LEAKPROOF IMMUTABLE
     ... ''')
     >>> conn.close()
 
     4. explode db1
     >>> conn = pgconn(dsn1)
     >>> explode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': 1, 'TABLE': 3, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': 1,
-     'CONSTRAINT': 2, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 2, 'EXTENSION': None, 'FUNCTION': 1, 'AGGREGATE': None,
+     'SEQUENCE': 1, 'PARTITIONED_TABLE': 1, 'TABLE': 4, 'SEQUENCE_OWNED_BY': 1,
+     'PRIMARY_KEY': 1, 'CONSTRAINT': 4, 'PARTITIONED_INDEX': 1, 'INDEX': 2, 'VIEW': 1}
     >>> conn.close()
 
     5. implode db2
     >>> conn = pgconn(dsn2)
     >>> implode(conn, exdir) # doctest: +NORMALIZE_WHITESPACE
-    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': None, 'AGGREGATE': None,
-     'SEQUENCE': 1, 'TABLE': 3, 'SEQUENCE_OWNED_BY': 1, 'PRIMARY_KEY': 1,
-     'CONSTRAINT': 2, 'INDEX': None, 'VIEW': 1}
+    {'SCHEMA': 1, 'EXTENSION': None, 'FUNCTION': 1, 'AGGREGATE': None,
+     'SEQUENCE': 1, 'PARTITIONED_TABLE': 1, 'TABLE': 4, 'SEQUENCE_OWNED_BY': 1,
+     'PRIMARY_KEY': 1, 'CONSTRAINT': 2, 'PARTITIONED_INDEX': 1, 'INDEX': None, 'VIEW': 1}
     >>> conn.close()
 
     6. make dumps of both
@@ -909,6 +949,7 @@ def test_exp_imp():
 
     7. compare
     >>> import filecmp
+    >>> logger.debug('to compare manually, run `diff %s %s', file1, file2)
     >>> filecmp.cmp(file1, file2, shallow=False)
     True
 
