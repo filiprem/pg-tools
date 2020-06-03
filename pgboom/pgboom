@@ -200,7 +200,7 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-def main():
+def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog=PROGNAME,
@@ -311,7 +311,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     return stats
 
 
-def implode(conn, metadir):
+def implode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     """Loads object definitions from directory to Postgres.
 
     Does not overwrite any pre-existing objects.
@@ -330,7 +330,7 @@ def implode(conn, metadir):
     return stats
 
 
-def diff(conn, metadir):
+def diff(conn: psycopg2.extensions.connection, metadir: str) -> int:
     """Compares object definitions between database and directory, using system `diff` command.
 
     The directory should have same structure as produced by `pgboom explode`.
@@ -382,7 +382,7 @@ def cat(metadir: str) -> dict:
     return implode(None, metadir)
 
 
-def test():
+def test() -> tuple:
     """Performs a built-in test (for developers).
     """
 
@@ -391,7 +391,7 @@ def test():
     return doctest.testmod(verbose=ARGS.debug)
 
 
-def make_where():
+def make_where() -> tuple:
     """Construct a WHERE clause for object list filtering.
 
     Returns:
@@ -423,7 +423,7 @@ def make_where():
     return (clause, params)
 
 
-def explode_objects(conn, metadir: str, objclass: str) -> int:
+def explode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass: str) -> int:
     """Extract objects of given class from database to flat files.
 
     Return counter.
@@ -462,7 +462,7 @@ def explode_objects(conn, metadir: str, objclass: str) -> int:
     return count or None
 
 
-def implode_objects(conn, metadir: str, objclass: str) -> int:
+def implode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass: str) -> int:
     """Load objects from directory.
 
     Objects go to database (action=implode) or file (action=cat).
@@ -524,7 +524,7 @@ def is_expected_ddl(text: str) -> bool:
     return bool(re.match(r'(CREATE|ALTER TABLE|ALTER SEQUENCE)\b', text))
 
 
-def db_execute_ddl_file(conn, filename) -> bool:
+def db_execute_ddl_file(conn: psycopg2.extensions.connection, filename: str) -> bool:
     """Executes DDL from given file in database.
 
     File content is only minimally validated: check if first line begins with
@@ -580,7 +580,7 @@ def db_execute_ddl_file(conn, filename) -> bool:
     return True
 
 
-def pgconn(dsn='', autocommit=False):
+def pgconn(dsn: str = '', autocommit: bool = False) -> psycopg2.extensions.connection:
     """Connects to PostgreSQL.
 
     Gets a new connection and sets application_name in the session.
@@ -608,7 +608,8 @@ def pgconn(dsn='', autocommit=False):
 # Following functions exist to grab object definitions. They probably should be
 # packaged into separate module.
 
-def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str = None,
+def getobjdef(conn: psycopg2.extensions.connection, objclass: str,
+              oid: int, nspname: str = None, objname: str = None,
               conrelnspname: str = None, conrelname: str = None) -> str:
     """Gets SQL object definition (CREATE statement) from database.
 
@@ -662,7 +663,7 @@ def getobjdef(conn, objclass: str, oid: int, nspname: str = None, objname: str =
     return objdef
 
 
-def getaggdef(conn, aggoid: int) -> str:
+def getaggdef(conn: psycopg2.extensions.connection, aggoid: int) -> str:
     """Generate CREATE AGGREGATE statement for given aggregate function.
 
     Credits for initial SQL go to Erwin Brandstetter
@@ -703,7 +704,7 @@ WHERE aggfnoid = %(oid)s
         return defn
 
 
-def gettabledef(conn, taboid: int) -> str:
+def gettabledef(conn: psycopg2.extensions.connection, taboid: int) -> str:
     """Generate CREATE TABLE statement for given table.
 
     >>> pg = pgconn(ARGS.DSN)
@@ -885,7 +886,7 @@ FROM tabdef
 
 # test-only functions
 
-def test_exp_imp():
+def test_exp_imp() -> None:
     """Tests database reproduction with explode + implode.
 
     Uses `pg_dump -s` as comparison method.
