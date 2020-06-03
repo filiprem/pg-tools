@@ -30,6 +30,21 @@ The `pgboom` program can also compare (**`diff`**) existing database to director
 It can also concatenate (**`cat`**) directory contents into single SQL file.
 
 
+Installation
+------------
+
+Simply download the `pgboom` script and make it executable.
+
+`pgboom` requires Python 3.6 or later. There is no external requirements except
+[psycopg2](https://www.psycopg.org).
+
+On non-Linux platforms, you may have issues with psycopg2 installation, which
+depends on libpq. In this case, use `psycopg2-binary` package:
+```
+pip3 install psycopg2-binary
+```
+
+
 Usage
 -----
 
@@ -252,6 +267,7 @@ Known issues
 * WARNING! On implode, file content is only minimally validated.
   * It is your responsibility to use trusted directory as metadata source.
   * If there are multiple statements in a file, they will all be executed.
+* The `diff` action relies on `diff` utility which may not be present on Windows.
 * The `diff` action produces only a context diff, nothing like a SQL patch; for
   this type of schema comparison tool, please check apgdiff project. 
 * On `explode`, partition constraints and indexes are exported, even if they
