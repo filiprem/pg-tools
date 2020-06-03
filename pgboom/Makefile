@@ -7,5 +7,8 @@ devcheck: pgboom
 README.md: README.md.in pgboom
 	perl -pe 's{__USAGE__}{qx(python3 pgboom -h)}e' < $< > $@
 
+README.html: README.md
+	pandoc $< > $@
+
 test: pgboom
 	python3 pgboom test '' /tmp/testpgboom
