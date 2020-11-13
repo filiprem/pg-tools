@@ -1,16 +1,15 @@
 #!/bin/bash
 
-# execute as postgres user
-[[ "$(id -nu)" =~ (postgres|pgdba|enterprisedb|ppas) ]] || { echo Please run as postgres user >&2; exit 1; }
-
 log=/tmp/postgres-checkdb.log
-truncate -s 0 $log || exit 1
+logerr=/tmp/postgres-checkdb-error.log
+exec > >(tee $log) 2> >(tee $logerr >&2)
+
+echo "STARTED (log: $log, errors: $logerr)"
 
 export LC_ALL=C
 
-debug () {
-  echo [$0 $$ $(date)] "$@" 
-}
+# execute as postgres user
+[[ "$(id -nu)" =~ (postgres|pgdba|enterprisedb|ppas) ]] || { echo "STOP (please run as postgres user)" >&2; exit 1; }
 
 # find binaries
 mybin=$(ps ax | perl -lne 'print $1 if m{\s(/\S+/)(postgres|postmaster) -D}')
@@ -18,6 +17,10 @@ for tool in postgres pg_ctl pg_controldata psql; do
 	found=$(find $mybin /bin/ /sbin/ /usr/bin/ /usr/sbin/ /usr/lib/ /opt/ -name $tool -type f -perm -111 2>/dev/null | head -n1)
 	eval $tool=${found:-$tool}
 done
+
+[ "$psql" ] || { echo "STOP (could not locate psql binary)" >&2; exit 2; }
+
+$psql -XqAtc 'select version()' || { echo "STOP (could not connect to default database)" >&2; exit 3; }
 
 clusters=$(
 ls -d \
@@ -30,27 +33,30 @@ ls -d \
 	2>/dev/null | sort | uniq
 )
 
-# find data directory
+# find data directory of a running cluster
 for data in $clusters
 do
-  [ -d "$data" -a -f "$data/PG_VERSION" ] && break
+  [ -d "$data" -a -f "$data/PG_VERSION" -a -f "$data/postmaster.pid" ] && break
 done
-[ -d $data -a -f $data/PG_VERSION ] || { echo Could not locate data directory >&2; exit 1; }
-debug "Data directory: \"$data\""
+[ -d $data -a -f $data/PG_VERSION ] || { echo "STOP (could not find a running cluster)" >&2; exit 4; }
+
+SERVER_PID=$(head -n 1 "$data/postmaster.pid")
 
 for command in \
-  "uname -a" \
-  "cat /etc/os-release" \
   "date" \
   "uptime" \
+  "uname -a" \
+  "cat /etc/os-release" \
+  "env" \
   "lscpu" \
+  "free -h" \
   "df -hT" \
   "iostat -cdtxyz 5 1" \
-  "free -h" \
-  "grep ^VmPeak /proc/$(head -n1 $data/postmaster.pid)/status" \
+  "grep ^VmPeak /proc/$SERVER_PID/status" \
   "grep ^Hugepagesize /proc/meminfo" \
   "ps xf" \
   "$postgres --version" \
+  "ls -la $data" \
   "$pg_ctl status -D $data" \
   "$pg_controldata $data" \
   "du -sLh $data" \
@@ -58,10 +64,10 @@ for command in \
   "du -sLh $data/pg_xlog" \
   "$psql -l"
 do
-  debug "Running command: $command"
-  echo "======== Command output for [ $command ] ===========" >> $log 2>&1
-  eval $command                                               >> $log 2>&1
-  echo "======== Command output finished =========="          >> $log 2>&1
+  echo "Running command: $command"
+  echo "======== Command output for [ $command ] ==========="
+  eval $command 2>&1
+  echo "======== Command output finished =========="
 done
 
 # Cluster-wide queries.
@@ -79,17 +85,17 @@ for sql in \
   "SELECT * FROM pg_settings WHERE setting <> boot_val ORDER BY source, sourcefile, sourceline" \
   "SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn())"
 do
-  debug "Running SQL: $sql"
+  echo "Running SQL: $sql"
   {
     echo "======== SQL output for [ $sql ] ========"
-    $psql -Xqc "$sql"
+    $psql -Xqc "$sql" 2>&1
     echo "======== SQL output finished ========"
-  } >> $log 2>&1
+  }
 done
 
 # Per-database queries.
 
-for db in $( $psql -XqAtc "SELECT datname FROM pg_database 
+for db in $( $psql -XqAtc "SELECT datname FROM pg_database
   WHERE datname NOT IN ('template0','template1','postgres')
   ORDER BY datname" )
 do
@@ -105,14 +111,14 @@ do
     "SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000" \
 	"SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1"
   do
-    debug "Running SQL in $db: $sql"
+    echo "Running SQL in $db: $sql"
 	{
 	  echo "======== DB: $db ========"
 	  echo "======== SQL output for [ $sql ] ========"
-      $psql -Xqc "$sql" $db
+      $psql -Xqc "$sql" $db 2>&1
       echo "======== SQL output finished ========"
-	} >> $log 2>&1
+	}
   done
 done
 
-debug "Finished. Log in $log"
+echo "FINISHED (log: $log, errors: $logerr)"
