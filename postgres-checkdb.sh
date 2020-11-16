@@ -1,7 +1,8 @@
 #!/bin/bash
 
-log=/tmp/postgres-checkdb.log
-logerr=/tmp/postgres-checkdb-error.log
+tag=$(hostname).$(date +%Y%m%d%H%M%S)
+log=/tmp/postgres-checkdb.$tag.log
+logerr=/tmp/postgres-checkdb-error.$tag.log
 exec > >(tee $log) 2> >(tee $logerr >&2)
 
 echo "STARTED (log: $log, errors: $logerr)"
