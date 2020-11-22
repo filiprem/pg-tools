@@ -1,0 +1,6 @@
+default_version = '1.0'
+comment = 'PostgreSQL object versioning'
+superuser = false
+trusted = true
+relocatable = false
+schema = 'public'

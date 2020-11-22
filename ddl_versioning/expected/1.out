@@ -1,0 +1,56 @@
+CREATE EXTENSION ddl_versioning;
+SELECT object_id,object_type,object_identity FROM ddl_versioning_object;
+ object_id | object_type | object_identity 
+-----------+-------------+-----------------
+(0 rows)
+
+SELECT object_id,version_id,object_definition FROM ddl_versioning_version;
+ object_id | version_id | object_definition 
+-----------+------------+-------------------
+(0 rows)
+
+-- initial version of table
+CREATE TABLE test (id int4 PRIMARY KEY, payload text);
+-- initial version of function
+CREATE FUNCTION test(int) RETURNS text LANGUAGE sql AS 'SELECT payload FROM test WHERE id=$1';
+-- amended table (should create version 2)
+ALTER TABLE test ADD extra boolean;
+-- new index
+CREATE INDEX test_extra_idx ON test (extra) WHERE id<>1;
+-- amended function (should create version 2)
+CREATE OR REPLACE FUNCTION test(int) RETURNS text LANGUAGE sql AS 'SELECT payload FROM test WHERE id=$1 AND extra';
+SELECT object_id,object_type,object_identity FROM ddl_versioning_object ORDER BY 1;
+ object_id | object_type |    object_identity    
+-----------+-------------+-----------------------
+         1 | table       | public.test
+         2 | index       | public.test_pkey
+         3 | function    | public.test(integer)
+         4 | index       | public.test_extra_idx
+(4 rows)
+
+SELECT object_id,version_id,object_definition FROM ddl_versioning_version ORDER BY 1,2;
+ object_id | version_id |                               object_definition                                
+-----------+------------+--------------------------------------------------------------------------------
+         1 |          1 | CREATE TABLE public.test (                                                    +
+           |            |     id integer NOT NULL,                                                      +
+           |            |     payload text                                                              +
+           |            | );
+         1 |          2 | CREATE TABLE public.test (                                                    +
+           |            |     id integer NOT NULL,                                                      +
+           |            |     payload text,                                                             +
+           |            |     extra boolean                                                             +
+           |            | );
+         2 |          1 | CREATE UNIQUE INDEX test_pkey ON public.test USING btree (id)
+         3 |          1 | CREATE OR REPLACE FUNCTION public.test(integer)                               +
+           |            |  RETURNS text                                                                 +
+           |            |  LANGUAGE sql                                                                 +
+           |            | AS $function$SELECT payload FROM test WHERE id=$1$function$                   +
+           |            | 
+         3 |          2 | CREATE OR REPLACE FUNCTION public.test(integer)                               +
+           |            |  RETURNS text                                                                 +
+           |            |  LANGUAGE sql                                                                 +
+           |            | AS $function$SELECT payload FROM test WHERE id=$1 AND extra$function$         +
+           |            | 
+         4 |          1 | CREATE INDEX test_extra_idx ON public.test USING btree (extra) WHERE (id <> 1)
+(6 rows)
+
