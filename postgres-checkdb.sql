@@ -9,7 +9,7 @@ SELECT * FROM pg_stat_bgwriter;
 SELECT * FROM pg_stat_replication;
 SELECT * FROM pg_stat_ssl WHERE ssl;
 SELECT * FROM pg_stat_wal_receiver;
-SELECT * FROM pg_authid ORDER BY oid LIMIT 1000;
+SELECT * FROM pg_roles ORDER BY oid LIMIT 1000;
 SELECT * FROM pg_settings WHERE setting <> boot_val ORDER BY source, sourcefile, sourceline;
 SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn());
 SELECT c.relkind, count(*), sum(c.relpages) relpages, sum(reltuples) reltuples, sum(c.relpages)*current_setting('block_size')::int relbytes FROM pg_class c GROUP BY 1 ORDER BY sum(c.relpages) DESC;
@@ -23,6 +23,4 @@ SELECT schemaname, tablename, attname, null_frac, avg_width, n_distinct, substri
 SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000;
 SELECT userid, dbid, queryid, substring(query from 1 for 2000) as query, calls, total_time, min_time, max_time, mean_time, stddev_time, rows, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, temp_blks_written, blk_read_time, blk_write_time FROM pg_stat_statements ORDER BY total_time DESC LIMIT 1000;
 SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1;
-
-
-
+SELECT * FROM pg_extension;
