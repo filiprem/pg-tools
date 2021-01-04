@@ -10,11 +10,19 @@ echo "STARTED (log: $log, errors: $logerr)"
 export LC_ALL=C
 
 # execute as postgres user
-[[ "$(id -nu)" =~ (postgres|pgdba|enterprisedb|ppas) ]] || { echo "STOP (please run as postgres user)" >&2; exit 1; }
+if [[ "$(id -nu)" =~ (postgres|pgdba|enterprisedb|ppas) ]]
+then
+	echo "Running in database owner mode";
+	SERVER=1
+else
+	echo "Running in client mode"
+	unset SERVER
+fi
 
 # find binaries
 mybin=$(ps ax | perl -lne 'print $1 if m{\s(/\S+/)(postgres|postmaster) -D}')
-for tool in postgres pg_ctl pg_controldata psql; do
+for tool in postgres pg_ctl pg_controldata psql
+do
 	found=$(find $mybin /bin/ /sbin/ /usr/bin/ /usr/sbin/ /usr/lib/ /opt/ -name $tool -type f -perm -111 2>/dev/null | head -n1)
 	eval $tool=${found:-$tool}
 done
@@ -23,53 +31,56 @@ done
 
 $psql -XqAtc 'select version()' || { echo "STOP (could not connect to default database)" >&2; exit 3; }
 
-clusters=$(
-ls -d \
-	"$PGDATA" \
-	"$HOME/data" \
-	"$($psql -XqAtc 'show data_directory')" \
-	/var/lib/pgsql/*/data \
-	/var/lib/pgsql/data \
-	/var/lib/postgresql/*/* \
-	2>/dev/null | sort | uniq
-)
+if [ "$SERVER" ]; then
 
-# find data directory of a running cluster
-for data in $clusters
-do
-  [ -d "$data" -a -f "$data/PG_VERSION" -a -f "$data/postmaster.pid" ] && break
-done
-[ -d $data -a -f $data/PG_VERSION ] || { echo "STOP (could not find a running cluster)" >&2; exit 4; }
+	# find data directory of a running cluster
+	clusters=$(
+	ls -d \
+		"$PGDATA" \
+		"$HOME/data" \
+		"$($psql -XqAtc 'show data_directory')" \
+		/var/lib/pgsql/*/data \
+		/var/lib/pgsql/data \
+		/var/lib/postgresql/*/* \
+		2>/dev/null | sort | uniq
+	)
+	for data in $clusters
+	do
+		[ -d "$data" -a -f "$data/PG_VERSION" -a -f "$data/postmaster.pid" ] && break
+	done
+	[ -d $data -a -f $data/PG_VERSION ] || { echo "STOP (could not find a running cluster)" >&2; exit 4; }
 
-SERVER_PID=$(head -n 1 "$data/postmaster.pid")
+	SERVER_PID=$(head -n 1 "$data/postmaster.pid")
 
-for command in \
-  "date" \
-  "uptime" \
-  "uname -a" \
-  "cat /etc/os-release" \
-  "env" \
-  "lscpu" \
-  "free -h" \
-  "df -hT" \
-  "iostat -cdtxyz 5 1" \
-  "grep ^VmPeak /proc/$SERVER_PID/status" \
-  "grep ^Hugepagesize /proc/meminfo" \
-  "ps xf" \
-  "$postgres --version" \
-  "ls -la $data" \
-  "$pg_ctl status -D $data" \
-  "$pg_controldata $data" \
-  "du -sLh $data" \
-  "du -sLh $data/pg_wal" \
-  "du -sLh $data/pg_xlog" \
-  "$psql -l"
-do
-  echo "Running command: $command"
-  echo "======== Command output for [ $command ] ==========="
-  eval $command 2>&1
-  echo "======== Command output finished =========="
-done
+	for command in \
+		"date" \
+		"uptime" \
+		"uname -a" \
+		"cat /etc/os-release" \
+		"env" \
+		"lscpu" \
+		"free -h" \
+		"df -hT" \
+		"iostat -cdtxyz 5 1" \
+		"grep ^VmPeak /proc/$SERVER_PID/status" \
+		"grep ^Hugepagesize /proc/meminfo" \
+		"ps xf" \
+		"$postgres --version" \
+		"ls -la $data" \
+		"$pg_ctl status -D $data" \
+		"$pg_controldata $data" \
+		"du -sLh $data" \
+		"du -sLh $data/pg_wal" \
+		"du -sLh $data/pg_xlog" \
+		"$psql -l"
+	do
+		echo "Running command: $command"
+		echo "======== Command output for [ $command ] ==========="
+		eval $command 2>&1
+		echo "======== Command output finished =========="
+	done
+
+fi  # if [ "$SERVER" ]
 
 # Cluster-wide queries.
 
@@ -82,7 +93,7 @@ for sql in \
   "SELECT * FROM pg_stat_replication" \
   "SELECT * FROM pg_stat_ssl WHERE ssl" \
   "SELECT * FROM pg_stat_wal_receiver" \
-  "SELECT * FROM pg_authid ORDER BY oid LIMIT 1000" \
+  "SELECT * FROM pg_roles ORDER BY oid LIMIT 1000" \
   "SELECT * FROM pg_settings WHERE setting <> boot_val ORDER BY source, sourcefile, sourceline" \
   "SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn())"
 do
@@ -111,7 +122,8 @@ do
 	"SELECT schemaname, tablename, attname, null_frac, avg_width, n_distinct, substring(most_common_vals::text from 1 for 2000) as most_common_vals, most_common_freqs FROM pg_stats NATURAL JOIN (SELECT n.nspname AS schemaname, c.relname AS tablename FROM pg_namespace n, pg_class c WHERE c.relnamespace=n.oid AND c.relkind='r' AND c.relpages>1 ORDER BY c.relpages DESC LIMIT 20) x ORDER BY schemaname, tablename, attname" \
     "SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000" \
 	"SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1" \
-	"SELECT * FROM pg_stat_statements ORDER BY total_time DESC LIMIT 1000"
+	"SELECT userid, dbid, queryid, substring(query from 1 for 2000) as query, calls, total_time, min_time, max_time, mean_time, stddev_time, rows, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, temp_blks_written, blk_read_time, blk_write_time FROM pg_stat_statements ORDER BY total_time DESC LIMIT 1000" \
+	"SELECT * FROM pg_extension"
   do
     echo "Running SQL in $db: $sql"
 	{
