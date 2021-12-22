@@ -19,72 +19,72 @@ import psycopg2.errorcodes
 import psycopg2.extensions
 
 
-PROGNAME = 'pgboom'
+PROGNAME = "pgboom"
 
-ACTIONS = ('explode', 'implode', 'diff', 'cat', 'test')
+ACTIONS = ("explode", "implode", "diff", "cat", "test")
 
-ARGS = None
+IGNORED_SCHEMAS_REGEX = (
+    "^(information_schema|pg_temp|pg_toast|pg_catalog|_timescaledb_|timescaledb_information)"
+)
 
 # Rules for producing object definitions:
 # * 'list' query must produce nspname and objname.
 # * full schema names must be included.
 # * 'create' query must include trailing semicolon.
 OBJECTMETA = {
-    'SCHEMA': {
-        'list': """SELECT n.nspname, n.nspname AS objname, n.oid
+    "SCHEMA": {
+        "list": f"""SELECT n.nspname, n.nspname AS objname, n.oid
         FROM pg_catalog.pg_namespace n
-        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-        AND n.nspname !~ '^pg_temp'
-        AND n.nspname !~ '^pg_toast' """,
-        'create': """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
+        WHERE n.nspname !~ '{IGNORED_SCHEMAS_REGEX}' """,
+        "create": """SELECT pg_catalog.format('CREATE SCHEMA %I;', n.nspname)
         FROM pg_catalog.pg_namespace n WHERE n.oid = __OID__ """,
     },
-    'EXTENSION': {
-        'list': """SELECT n.nspname, x.extname AS objname, x.oid
+    "EXTENSION": {
+        "list": """SELECT n.nspname, x.extname AS objname, x.oid
         FROM pg_extension x
         JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
         WHERE x.extname <> 'plpgsql' """,
-        'create': """SELECT pg_catalog.format(
+        "create": """SELECT pg_catalog.format(
             'CREATE EXTENSION %I SCHEMA %I CASCADE;', x.extname, n.nspname)
         FROM pg_catalog.pg_extension x
         JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
         WHERE x.oid = __OID__""",
     },
-    'FUNCTION': {  # all functions except aggregate
-        'list': """SELECT n.nspname, p.proname || '(' ||
+    "FUNCTION": {  # all functions except aggregate
+        "list": f"""SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
         || ')' AS objname, p.oid
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind <> 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND p.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
-        'create': """SELECT regexp_replace(pg_get_functiondef(__OID__),
+        "create": """SELECT regexp_replace(pg_get_functiondef(__OID__),
                  '^CREATE OR REPLACE FUNCTION', 'CREATE FUNCTION') || ';'""",
     },
-    'AGGREGATE': {  # aggregate functions only
-        'list': """SELECT n.nspname, p.proname || '(' ||
+    "AGGREGATE": {  # aggregate functions only
+        "list": f"""SELECT n.nspname, p.proname || '(' ||
         array_to_string(array(select (select t.typname from pg_type t where t.oid = a.oid) from unnest(p.proargtypes) a(oid)),',')
         || ')' AS objname, p.oid
         FROM pg_proc p, pg_namespace n
         WHERE n.oid = p.pronamespace
         AND p.prokind = 'a'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND p.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         # this is overriden later (see getaggdef method).
         # we just anticipate future built-in function name here.
-        'create': """SELECT pg_get_aggregatedef(__OID__) || ';'""",
+        "create": """SELECT pg_get_aggregatedef(__OID__) || ';'""",
     },
-    'SEQUENCE': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "SEQUENCE": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'S'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND c.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
-        'create': """SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
+        "create": """SELECT format(E'CREATE SEQUENCE %I.%I AS %s\n'
                 'INCREMENT %s MINVALUE %s MAXVALUE %s START %s CACHE %s%s;',
             n.nspname, c.relname, pg_catalog.format_type(sp.data_type, NULL),
             sp.increment, sp.minimum_value, sp.maximum_value, sp.start_value,
@@ -92,38 +92,39 @@ OBJECTMETA = {
         FROM pg_catalog.pg_class c, pg_namespace n, pg_sequence_parameters(c.oid) sp
         WHERE c.oid = __OID__ AND n.oid = c.relnamespace """,
     },
-    'PARTITIONED_TABLE': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "PARTITIONED_TABLE": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'p'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND c.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
-        'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
+        "create": """SELECT pg_get_tabledef(__OID__) || ';'""",
     },
-    'TABLE': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "TABLE": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'r'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND c.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
         # this is overriden later (see gettabledef method).
         # we just anticipate future built-in function name here.
-        'create': """SELECT pg_get_tabledef(__OID__) || ';'""",
+        "create": """SELECT pg_get_tabledef(__OID__) || ';'""",
     },
-    'SEQUENCE_OWNED_BY': {
+    "SEQUENCE_OWNED_BY": {
         # exploiting (documented) fact, that sequence can be owned by
         # same-schema table only.
-        'list': """SELECT n.nspname, c.relname as objname, c.oid
+        "list": f"""SELECT n.nspname, c.relname as objname, c.oid
         FROM pg_class c2 JOIN pg_depend d2 ON c2.oid=d2.refobjid JOIN pg_attribute a2
           ON (a2.attrelid=c2.oid AND a2.attnum=d2.refobjsubid)
         JOIN pg_class c ON c.oid = d2.objid JOIN pg_namespace n on n.oid = c.relnamespace
         WHERE d2.classid='pg_class'::regclass AND d2.refclassid='pg_class'::regclass
-        AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S' """,
-        'create': """SELECT format('ALTER SEQUENCE %I.%I OWNED BY %I.%I.%I;',
+        AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S'
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}' """,
+        "create": """SELECT format('ALTER SEQUENCE %I.%I OWNED BY %I.%I.%I;',
             n.nspname, c.relname, n.nspname, c2.relname, a2.attname)
         FROM pg_class c2 JOIN pg_depend d2 ON c2.oid=d2.refobjid JOIN pg_attribute a2
           ON (a2.attrelid=c2.oid AND a2.attnum=d2.refobjsubid)
@@ -132,76 +133,145 @@ OBJECTMETA = {
         AND d2.objid = c.oid AND d2.deptype='a' AND c.relkind = 'S' AND c.oid = __OID__ """,
     },
     # This is separated from other CONSTRAINTs to work around PK->FK dependency problem.
-    'PRIMARY_KEY': {
-        'list': """SELECT n.nspname, con.conname AS objname, con.oid,
+    "PRIMARY_KEY": {
+        "list": f"""SELECT n.nspname, con.conname AS objname, con.oid,
             crn.nspname AS conrelnspname, cr.relname AS conrelname
         FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
         WHERE con.contype = 'p'
         AND n.oid = con.connamespace
         AND cr.oid = con.conrelid
         AND crn.oid = cr.relnamespace
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
-        'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}' """,
+        "create": """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
             pg_get_constraintdef(__OID__, true))""",
     },
-    'CONSTRAINT': {
-        'list': """SELECT n.nspname, con.conname AS objname, con.oid,
+    "CONSTRAINT": {
+        "list": f"""SELECT n.nspname, con.conname AS objname, con.oid,
             crn.nspname AS conrelnspname, cr.relname AS conrelname
         FROM pg_constraint con, pg_namespace n, pg_class cr, pg_namespace crn
         WHERE con.contype <> 'p'
         AND n.oid = con.connamespace
         AND cr.oid = con.conrelid
         AND crn.oid = cr.relnamespace
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema') """,
-        'create': """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}' """,
+        "create": """SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
             '__CONRELNSPNAME__', '__CONRELNAME__', '__OBJECT__',
             pg_get_constraintdef(__OID__, true))""",
     },
-    'PARTITIONED_INDEX': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "PARTITIONED_INDEX": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n, pg_index i
         WHERE n.oid = c.relnamespace AND c.relkind = 'I'
         AND i.indexrelid = c.oid AND NOT i.indisprimary
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND NOT EXISTS (SELECT 1 FROM pg_constraint con
             WHERE con.conrelid = i.indrelid AND con.conindid = i.indexrelid) """,
         # removing the ONLY keyword to revive partitioned indexes
-        'create': """SELECT regexp_replace(pg_get_indexdef(__OID__, 0, true),
+        "create": """SELECT regexp_replace(pg_get_indexdef(__OID__, 0, true),
             '[[:<:]]ONLY[[:space:]]+', '') || ';'""",
     },
-    'INDEX': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "INDEX": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n, pg_index i
         WHERE n.oid = c.relnamespace AND c.relkind = 'i'
         AND i.indexrelid = c.oid AND NOT i.indisprimary
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND NOT EXISTS (SELECT 1 FROM pg_constraint con
             WHERE con.conrelid = i.indrelid AND con.conindid = i.indexrelid) """,
-        'create': """SELECT pg_get_indexdef(__OID__, 0, true) || ';'""",
+        "create": """SELECT pg_get_indexdef(__OID__, 0, true) || ';'""",
     },
-    'VIEW': {
-        'list': """SELECT n.nspname, c.relname AS objname, c.oid
+    "VIEW": {
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
         FROM pg_class c, pg_namespace n
         WHERE n.oid = c.relnamespace AND c.relkind = 'v'
-        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
         AND c.oid NOT IN (SELECT objid FROM pg_depend
                  WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
-        'create': """SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n'
+        "create": """SELECT E'CREATE VIEW __SCHEMA__.__OBJECT__ AS \\n'
             || pg_get_viewdef(__OID__, true)""",
+    },
+    "CONTINUOUS_AGGREGATE": {
+        "requires": "timescaledb",
+        "list": f"""SELECT n.nspname, c.relname AS objname, c.oid
+        FROM  timescaledb_information.continuous_aggregates cagg, pg_class c, pg_namespace n
+        WHERE n.oid = c.relnamespace AND c.relkind = 'v'
+        AND n.nspname !~ '{IGNORED_SCHEMAS_REGEX}'
+        AND n.nspname = cagg.view_schema AND c.relname = cagg.view_name
+        AND c.oid NOT IN (SELECT objid FROM pg_depend
+                 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e') """,
+        "create": """SELECT E'CREATE MATERIALIZED VIEW __SCHEMA__.__OBJECT__ WITH (timescaledb.continuous) AS \\n'
+            || view_definition
+            FROM timescaledb_information.continuous_aggregates
+            WHERE view_schema = '__SCHEMA__' AND view_name = '__OBJECT__' """,
     },
 }
 
 logging.basicConfig(
-    format='%(asctime)s %(levelname)s %(funcName)s %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    level=logging.INFO)
+    format="%(asctime)s %(levelname)s %(funcName)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
 
 logger = logging.getLogger()
+
+class DatabaseInfo:
+    def __init__(self, conn: psycopg2.extensions.connection):
+        self.server_version = 'Unknown'
+        self.extensions = {}
+        with conn.cursor() as cur:
+            cur.execute("SHOW server_version")
+            (self.server_version,) = cur.fetchone()
+            cur.execute("SELECT extname, extversion FROM pg_extension")
+            for n, v in cur:
+                self.extensions[n] = v
+
+    def __str__(self):
+        return f"server_version: {self.server_version}, extensions: {self.extensions}"
 
 
 def main() -> None:
 
+    if ARGS.debug:
+        logger.setLevel(logging.DEBUG)
+
+    logger.debug("pgboom %s starting", ARGS.ACTION)
+
+    conn = None
+    if ARGS.ACTION != "cat":
+        logger.debug("testing database connection")
+        try:
+            conn = pgconn(ARGS.DSN)
+        except psycopg2.Error:
+            logger.exception(
+                "connection failed. You are supposed to provide connection\n"
+                "details in DSN parameter or environment variables [PGHOST, PGDATABASE etc],\n"
+                "as specified in www.postgresql.org/docs/current/libpq-envars.html"
+            )
+            sys.exit(1)
+
+        conninfo = DatabaseInfo(conn)
+        logger.debug(f"connection OK: {conninfo}")
+
+    if ARGS.ACTION == "explode":
+        res = explode(conn, ARGS.DIR)
+    elif ARGS.ACTION == "implode":
+        res = implode(conn, ARGS.DIR)
+    elif ARGS.ACTION == "diff":
+        res = diff(conn, ARGS)
+    elif ARGS.ACTION == "cat":
+        res = cat(ARGS)
+    elif ARGS.ACTION == "test":
+        res = test()
+    else:
+        raise NotImplementedError
+
+    logger.debug("pgboom %s finished, result: %s", ARGS.ACTION, res)
+
+
+def get_args() -> argparse.Namespace:
+    """Parse command line arguments.
+    """
     parser = argparse.ArgumentParser(
         prog=PROGNAME,
         description=__doc__,
@@ -213,63 +283,35 @@ def main() -> None:
         # grab the docstring from action's method
         adoc = globals()[a].__doc__
         # remove empty lines, usually present due to docstring conventions
-        adoc = re.sub(r'\n\s*\n', '\n', adoc, count=1)
+        adoc = re.sub(r"\n\s*\n", "\n", adoc, count=1)
         # strip trailing newlines, if present
-        adoc = re.sub(r'(\n\s*)+$', '', adoc)
-        actiondocs.append(f'{a}: {adoc}\n')
-    actionhelp = '\n'.join(actiondocs)
+        adoc = re.sub(r"(\n\s*)+$", "", adoc)
+        actiondocs.append(f"{a}: {adoc}\n")
+    actionhelp = "\n".join(actiondocs)
 
     # positional arguments: ACTION DSN DIR
-    parser.add_argument('ACTION', choices=ACTIONS, metavar='ACTION', help=actionhelp)
-    parser.add_argument('DSN', help="PostgreSQL data source in 'key=value' format")
-    parser.add_argument('DIR', help="Destination/source directory")
+    parser.add_argument("ACTION", choices=ACTIONS, metavar="ACTION", help=actionhelp)
+    parser.add_argument("DSN", help="PostgreSQL data source in 'key=value' format")
+    parser.add_argument("DIR", help="Destination/source directory")
     # options
-    parser.add_argument('--Class', '-C', choices=OBJECTMETA.keys(),
-                        help="Type of objects to extract/load")
-    parser.add_argument('--Schema', '-S', help="Database schema name regex")
-    parser.add_argument('--Object', '-O', help="Database object name regex")
-    parser.add_argument('--File', '-F', help='Output file for `cat` and `diff` actions')
-    parser.add_argument('--debug', '--verbose', '-v', action='store_true',
-                        help="Set verbose debugging on")
+    parser.add_argument(
+        "--Class",
+        "-C",
+        choices=OBJECTMETA.keys(),
+        help="Type of objects to extract/load",
+    )
+    parser.add_argument("--Schema", "-S", help="Database schema name regex")
+    parser.add_argument("--Object", "-O", help="Database object name regex")
+    parser.add_argument("--File", "-F", help="Output file for `cat` and `diff` actions")
+    parser.add_argument(
+        "--debug",
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Set verbose debugging on",
+    )
 
-    global ARGS
-    ARGS = parser.parse_args()
-
-    if ARGS.debug:
-        logger.setLevel(logging.DEBUG)
-
-    logger.debug('pgboom %s starting', ARGS.ACTION)
-
-    conn = None
-    if ARGS.ACTION != 'cat':
-        logger.debug("testing database connection")
-        try:
-            conn = pgconn(ARGS.DSN)
-        except psycopg2.Error:
-            logger.exception("connection failed. You are supposed to provide connection\n"
-                             "parameters via environment variables [PGHOST, PGDATABASE etc],\n"
-                             "as specified in www.postgresql.org/docs/current/libpq-envars.html")
-            sys.exit(1)
-
-        with conn.cursor() as cur:
-            cur.execute('SELECT current_database(), current_user, version()')
-            (db, usr, ver) = cur.fetchone()
-            logger.debug('connection OK: user=%s, db=%s, version=%s', usr, db, ver)
-
-    if ARGS.ACTION == 'explode':
-        res = explode(conn, ARGS.DIR)
-    elif ARGS.ACTION == 'implode':
-        res = implode(conn, ARGS.DIR)
-    elif ARGS.ACTION == 'diff':
-        res = diff(conn, ARGS.DIR)
-    elif ARGS.ACTION == 'cat':
-        res = cat(ARGS.DIR)
-    elif ARGS.ACTION == 'test':
-        res = test()
-    else:
-        raise NotImplementedError
-
-    logger.debug('pgboom %s finished, result: %s', ARGS.ACTION, res)
+    return parser.parse_args()
 
 
 def verify_metadir(adir: str) -> bool:
@@ -278,11 +320,11 @@ def verify_metadir(adir: str) -> bool:
 
     p = pathlib.Path(adir)
     if not (p.exists() and p.is_dir()):
-        logger.error('directory %s does not exist', adir)
+        logger.error("directory %s does not exist", adir)
         sys.exit(2)
     subdirs = [x.name for x in p.iterdir() if x.is_dir()]
     if set(subdirs).isdisjoint(OBJECTMETA.keys()):
-        logger.error('directory %s does not look like metadata directory', adir)
+        logger.error("directory %s does not look like metadata directory", adir)
         sys.exit(2)
     return True
 
@@ -296,7 +338,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
     try:
         pathlib.Path(metadir).mkdir(parents=True, exist_ok=True)
     except OSError:
-        logger.error('could not access output directory %s', metadir)
+        logger.error("could not access output directory %s", metadir)
         sys.exit(1)
 
     stats = {}
@@ -307,7 +349,7 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
         count = explode_objects(conn, metadir, objclass)
         stats[objclass] = count
 
-    logger.info('finished, stats: %s', stats)
+    logger.info("finished, stats: %s", stats)
     return stats
 
 
@@ -326,45 +368,49 @@ def implode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
         count = implode_objects(conn, metadir, objclass)
         stats[objclass] = count
 
-    logger.info('finished, stats: %s', stats)
+    logger.info("finished, stats: %s", stats)
     return stats
 
 
-def diff(conn: psycopg2.extensions.connection, metadir: str) -> int:
+def diff(conn: psycopg2.extensions.connection, arg) -> int:
     """Compares object definitions between database and directory, using system `diff` command.
 
     The directory should have same structure as produced by `pgboom explode`.
     Results are saved to --File, in context diff format.
     """
 
+    metadir = arg.DIR
     verify_metadir(metadir)
 
-    if ARGS.File is None:
-        logger.error('The `diff` action requires --File option')
+    if arg.File is None:
+        logger.error("The `diff` action requires --File option")
         sys.exit(1)
     try:
-        ofd = open(ARGS.File, mode='w')
+        ofd = open(arg.File, mode="w")
     except OSError:
-        logger.exception('Cannot open --File')
+        logger.exception("Cannot open --File")
         sys.exit(1)
 
     with tempfile.TemporaryDirectory() as dbdir:
-        logger.info('exploding database to %s', dbdir)
+        logger.info("exploding database to %s", dbdir)
         explode(conn, dbdir)
-        logger.info('comparing %s to %s', dbdir, metadir)
+        logger.info("comparing %s to %s", dbdir, metadir)
         for objclass in OBJECTMETA:
             dbsubdir = pathlib.Path(dbdir, objclass)
             metasubdir = pathlib.Path(metadir, objclass)
             if dbsubdir.exists() or metasubdir.exists():
-                logger.debug('processing %s definitions', objclass)
-                subprocess.run(['diff', '-r', '-C3', '-N', dbsubdir,
-                                metasubdir], stdout=ofd, check=False)
+                logger.debug("processing %s definitions", objclass)
+                subprocess.run(
+                    ["diff", "-r", "-C3", "-N", dbsubdir, metasubdir],
+                    stdout=ofd,
+                    check=False,
+                )
 
         # Return number of bytes written to --File.
         return ofd.tell()
 
 
-def cat(metadir: str) -> dict:
+def cat() -> dict:
     """Does the same as implode, but concatenates into --File, not database.
     """
 
@@ -372,22 +418,24 @@ def cat(metadir: str) -> dict:
         raise ValueError('The "cat" action requires --File option.')
     try:
         # overwrite the file
-        ofd = open(ARGS.File, mode='w')
-        ofd.write('SET check_function_bodies TO off;\n\n')
+        ofd = open(ARGS.File, mode="w")
+        ofd.write("SET check_function_bodies TO off;\n\n")
         ofd.close()
     except OSError:
-        logger.exception('Cannot open --File')
+        logger.exception("Cannot open --File")
         sys.exit(1)
     # implemented as part of implode.
-    return implode(None, metadir)
+    return implode(None, ARGS.DIR)
 
 
 def test() -> tuple:
     """Performs a built-in test (for developers).
     """
 
-    logger.info("entering test code - please ignore ERROR messages "
-                "unless you see specific tests failing")
+    logger.info(
+        "entering test code - please ignore ERROR messages "
+        "unless you see specific tests failing"
+    )
     return doctest.testmod(verbose=ARGS.debug)
 
 
@@ -411,58 +459,58 @@ def make_where() -> tuple:
 
     conditions = []
     params = []
-    clause = ''
+    clause = ""
     if ARGS.Schema is not None:
-        conditions.append('nspname ~ %s')
+        conditions.append("nspname ~ %s")
         params.append(ARGS.Schema)
     if ARGS.Object is not None:
-        conditions.append('objname ~ %s')
+        conditions.append("objname ~ %s")
         params.append(ARGS.Object)
     if conditions:
-        clause = ' WHERE ' + ' AND '.join(conditions)
+        clause = " WHERE " + " AND ".join(conditions)
     return (clause, params)
 
 
-def explode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass: str) -> int:
+def explode_objects(
+    conn: psycopg2.extensions.connection, metadir: str, objclass: str
+) -> int:
     """Extract objects of given class from database to flat files.
 
     Return counter.
     """
 
-    logger.debug('processing %s definitions', objclass)
+    logger.debug("processing %s definitions", objclass)
     count = 0
     with conn.cursor() as cur:
-        sqlselect = OBJECTMETA[objclass]['list']
+        sqlselect = OBJECTMETA[objclass]["list"]
         sqlfilter, sqlparams = make_where()
-        sqlquery = 'SELECT * FROM ({}) _lst{} ORDER BY nspname, objname'.format(
-            sqlselect, sqlfilter)
+        sqlquery = "SELECT * FROM ({}) _lst{} ORDER BY nspname, objname".format(
+            sqlselect, sqlfilter
+        )
         cur.execute(sqlquery, sqlparams)
         for r in cur:
-            if objclass in ['PRIMARY_KEY', 'CONSTRAINT']:
+            if objclass in ["PRIMARY_KEY", "CONSTRAINT"]:
                 (nspname, objname, oid, conrelnspname, conrelname) = r
                 objdef = getobjdef(
-                    conn,
-                    objclass,
-                    oid,
-                    nspname,
-                    objname,
-                    conrelnspname,
-                    conrelname)
+                    conn, objclass, oid, nspname, objname, conrelnspname, conrelname
+                )
             else:
                 (nspname, objname, oid) = r
                 objdef = getobjdef(conn, objclass, oid, nspname, objname)
-            fdir = f'{metadir}/{objclass}/{nspname}'
-            fname = f'{objname}.sql'
-            logger.debug('saving %s/%s', fdir, fname)
+            fdir = f"{metadir}/{objclass}/{nspname}"
+            fname = f"{objname}.sql"
+            logger.debug("saving %s/%s", fdir, fname)
             pathlib.Path(fdir).mkdir(parents=True, exist_ok=True)
-            with open(f'{fdir}/{fname}', 'w') as of:
+            with open(f"{fdir}/{fname}", "w") as of:
                 of.write(objdef)
             count += 1
 
     return count or None
 
 
-def implode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass: str) -> int:
+def implode_objects(
+    conn: psycopg2.extensions.connection, metadir: str, objclass: str
+) -> int:
     """Load objects from directory.
 
     Objects go to database (action=implode) or file (action=cat).
@@ -474,12 +522,12 @@ def implode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass
     # DIR/TABLE
     objdir = pathlib.Path(metadir, objclass)
     if not (objdir.exists() and objdir.is_dir()):
-        logger.debug('directory %s does not exist', objdir)
+        logger.debug("directory %s does not exist", objdir)
         return None
 
     count = 0
 
-    logger.debug('processing %s definitions', objclass)
+    logger.debug("processing %s definitions", objclass)
 
     # DIR/TABLE/public
     for schema_dir in sorted(objdir.iterdir()):
@@ -487,18 +535,18 @@ def implode_objects(conn: psycopg2.extensions.connection, metadir: str, objclass
             continue
         schema = schema_dir.name
         if ARGS.Schema and not re.search(ARGS.Schema, schema):
-            logger.debug('ignoring %s due to --Schema filter', schema_dir)
+            logger.debug("ignoring %s due to --Schema filter", schema_dir)
             continue
         # DIR/TABLE/public/users.sql
-        for objectfile in sorted(schema_dir.glob('*.sql')):
-            logger.debug('processing %s', objectfile)
+        for objectfile in sorted(schema_dir.glob("*.sql")):
+            logger.debug("processing %s", objectfile)
             name = objectfile.stem
             if ARGS.Object and not re.search(ARGS.Object, name):
-                logger.debug('ignoring %s due to --Object filter', objectfile)
+                logger.debug("ignoring %s due to --Object filter", objectfile)
                 continue
 
-            elif ARGS.ACTION == 'cat':
-                with open(ARGS.File, mode='a') as ofd:
+            elif ARGS.ACTION == "cat":
+                with open(ARGS.File, mode="a") as ofd:
                     ofd.write(objectfile.read_text())
                     count += 1
             elif db_execute_ddl_file(conn, objectfile):
@@ -521,7 +569,7 @@ def is_expected_ddl(text: str) -> bool:
     except (UnicodeDecodeError, AttributeError):
         pass
 
-    return bool(re.match(r'(CREATE|ALTER TABLE|ALTER SEQUENCE)\b', text))
+    return bool(re.match(r"(CREATE|ALTER TABLE|ALTER SEQUENCE)\b", text))
 
 
 def db_execute_ddl_file(conn: psycopg2.extensions.connection, filename: str) -> bool:
@@ -556,31 +604,33 @@ def db_execute_ddl_file(conn: psycopg2.extensions.connection, filename: str) -> 
 
     text = file.read_text()
     if not is_expected_ddl(text):
-        logger.error('unexpected content in %s', file)
-        logger.debug('unexpected content: %s', text)
+        logger.error("unexpected content in %s", file)
+        logger.debug("unexpected content: %s", text)
         return False
     with conn.cursor() as cur:
         # Explicit BEGIN is needed here, contrary to psycopg2 documentation.
-        cur.execute('BEGIN')
+        cur.execute("BEGIN")
         try:
             cur.execute(text)
             status = cur.statusmessage
             if not is_expected_ddl(status):
-                raise UserWarning('Aborting transaction '
-                                  f'due to "{status}" while executing "{file}"')
+                raise UserWarning(
+                    "Aborting transaction "
+                    f'due to "{status}" while executing "{file}"'
+                )
         except psycopg2.ProgrammingError as e:
             errcode = psycopg2.errorcodes.lookup(e.pgcode)
             msg = e.diag.message_primary
             # detail = e.diag.message_detail
             # hint = e.diag.message_hint
-            logger.error('%s when executing %s: %s', errcode, file, msg)
+            logger.error("%s when executing %s: %s", errcode, file, msg)
             return False
         finally:
-            cur.execute('END')
+            cur.execute("END")
     return True
 
 
-def pgconn(dsn: str = '', autocommit: bool = False) -> psycopg2.extensions.connection:
+def pgconn(dsn: str = "", autocommit: bool = False) -> psycopg2.extensions.connection:
     """Connects to PostgreSQL.
 
     Gets a new connection and sets application_name in the session.
@@ -608,9 +658,16 @@ def pgconn(dsn: str = '', autocommit: bool = False) -> psycopg2.extensions.conne
 # Following functions exist to grab object definitions. They probably should be
 # packaged into separate module.
 
-def getobjdef(conn: psycopg2.extensions.connection, objclass: str,
-              oid: int, nspname: str = None, objname: str = None,
-              conrelnspname: str = None, conrelname: str = None) -> str:
+
+def getobjdef(
+    conn: psycopg2.extensions.connection,
+    objclass: str,
+    oid: int,
+    nspname: str = None,
+    objname: str = None,
+    conrelnspname: str = None,
+    conrelname: str = None,
+) -> str:
     """Gets SQL object definition (CREATE statement) from database.
 
     Either the OID or (nspname, objname) pair will be required.
@@ -641,25 +698,25 @@ def getobjdef(conn: psycopg2.extensions.connection, objclass: str,
     <BLANKLINE>
     """
     with conn.cursor() as cur:
-        objgen = OBJECTMETA[objclass]['create']
-        objgen = re.sub('__OID__', str(oid), objgen)
-        objgen = re.sub('__SCHEMA__', nspname, objgen)
-        objgen = re.sub('__OBJECT__', objname, objgen)
-        if objclass in ['PRIMARY_KEY', 'CONSTRAINT']:
-            objgen = re.sub('__CONRELNSPNAME__', conrelnspname, objgen)
-            objgen = re.sub('__CONRELNAME__', conrelname, objgen)
+        objgen = OBJECTMETA[objclass]["create"]
+        objgen = re.sub("__OID__", str(oid), objgen)
+        objgen = re.sub("__SCHEMA__", nspname, objgen)
+        objgen = re.sub("__OBJECT__", objname, objgen)
+        if objclass in ["PRIMARY_KEY", "CONSTRAINT"]:
+            objgen = re.sub("__CONRELNSPNAME__", conrelnspname, objgen)
+            objgen = re.sub("__CONRELNAME__", conrelname, objgen)
             cur.execute(objgen)
             objdef = cur.fetchone()[0]
-        elif objclass in ['PARTITIONED_TABLE', 'TABLE']:
+        elif objclass in ["PARTITIONED_TABLE", "TABLE"]:
             objdef = gettabledef(conn, oid)
-        elif objclass == 'AGGREGATE':
+        elif objclass == "AGGREGATE":
             objdef = getaggdef(conn, oid)
         else:
             cur.execute(objgen)
             objdef = cur.fetchone()[0]
     # make sure the definition has trailing newline
-    if not re.search(r'\n\Z', objdef):
-        objdef += '\n'
+    if not re.search(r"\n\Z", objdef):
+        objdef += "\n"
     return objdef
 
 
@@ -699,7 +756,7 @@ WHERE aggfnoid = %(oid)s
     """
 
     with conn.cursor() as cur:
-        cur.execute(aggdefsql, {'oid': aggoid})
+        cur.execute(aggdefsql, {"oid": aggoid})
         defn = cur.fetchone()[0]
         return defn
 
@@ -879,12 +936,13 @@ SELECT
     ) as table_create_sql
 FROM tabdef
             """
-        cur.execute(tabdefsql, {'taboid': taboid})
+        cur.execute(tabdefsql, {"taboid": taboid})
         defn = cur.fetchone()[0]
         return defn
 
 
 # test-only functions
+
 
 def test_exp_imp() -> None:
     """Tests database reproduction with explode + implode.
@@ -964,4 +1022,5 @@ def test_exp_imp() -> None:
 
 
 if __name__ == "__main__":
+    ARGS = get_args()
     main()
