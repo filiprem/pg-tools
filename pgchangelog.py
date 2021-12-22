@@ -4,11 +4,12 @@
 """
 
 import argparse
+import csv
 import datetime
 import re
 import sys
 import urllib2
-import csv
+
 from bs4 import BeautifulSoup
 
 
