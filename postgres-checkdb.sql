@@ -33,3 +33,5 @@ SELECT locktype, mode, count(*) FROM pg_locks GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1;
 SELECT * FROM pg_extension;
 SELECT pg_current_wal_lsn(), * FROM pg_walfile_name_offset(pg_current_wal_lsn());
+SELECT * FROM timescaledb_information.hypertables;
+SELECT * FROM timescaledb_information.continuous_aggregates;

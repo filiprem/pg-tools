@@ -29,7 +29,7 @@ done
 
 [ "$psql" ] || { echo "STOP (could not locate psql binary)" >&2; exit 2; }
 
-$psql -XqAtc 'select version()' || { echo "STOP (could not connect to default database)" >&2; exit 3; }
+$psql -XqAtc '\conninfo' || { echo "STOP (could not connect to default database)" >&2; exit 3; }
 
 if [ "$SERVER" ]; then
 
@@ -85,9 +85,14 @@ fi  # if [ "$SERVER" ]
 # Cluster-wide queries.
 
 for sql in \
+  "SELECT CURRENT_TIMESTAMP" \
   "SELECT version()" \
+  "SELECT pg_is_in_recovery()" \
+  "SELECT now() - min(stats_reset) AS probable_server_age FROM pg_stat_database" \
   "SELECT pg_database_size(datname), CASE WHEN (blks_read+blks_hit)>0 THEN 100.0*blks_hit/(blks_read+blks_hit) END AS hit_ratio, * FROM pg_stat_database" \
+  "SELECT backend_type, state, count(*) FROM pg_stat_activity GROUP BY 1, 2 ORDER BY 1, 2" \
   "SELECT age(now(), xact_start) xact_age, age(now(), backend_start) backend_age, * FROM pg_stat_activity ORDER BY xact_start, backend_start" \
+  "SELECT locktype, mode, count(*) FROM pg_locks GROUP BY 1, 2 ORDER BY 1, 2" \
   "SELECT * FROM pg_stat_archiver" \
   "SELECT * FROM pg_stat_bgwriter" \
   "SELECT * FROM pg_stat_replication" \
@@ -122,8 +127,10 @@ do
 	"SELECT schemaname, tablename, attname, null_frac, avg_width, n_distinct, substring(most_common_vals::text from 1 for 2000) as most_common_vals, most_common_freqs FROM pg_stats NATURAL JOIN (SELECT n.nspname AS schemaname, c.relname AS tablename FROM pg_namespace n, pg_class c WHERE c.relnamespace=n.oid AND c.relkind='r' AND c.relpages>1 ORDER BY c.relpages DESC LIMIT 20) x ORDER BY schemaname, tablename, attname" \
     "SELECT * FROM pg_stat_user_functions ORDER BY total_time DESC LIMIT 1000" \
 	"SELECT psa.xact_start, age(now(), psa.xact_start) AS xact_age, l.pid, l.locktype, l.mode, l.granted::text, l.relation::regclass, psa.usename, regexp_replace(psa.query, E'(\\r|\\n|\\t)+', ' ', 'g') AS query FROM pg_stat_activity psa JOIN pg_locks l on l.pid = psa.pid LEFT JOIN pg_class c on c.oid = l.relation ORDER BY 1" \
-	"SELECT userid, dbid, queryid, substring(query from 1 for 2000) as query, calls, total_time, min_time, max_time, mean_time, stddev_time, rows, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, temp_blks_written, blk_read_time, blk_write_time FROM pg_stat_statements ORDER BY total_time DESC LIMIT 1000" \
-	"SELECT * FROM pg_extension"
+    "SELECT calls, round((total_plan_time+total_exec_time)::numeric,0) AS total_time, round((mean_plan_time+mean_exec_time)::numeric,2) AS mean_time, round(rows::numeric/calls,0) as avg_rows, substring(query from 1 for 2000) as query, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, temp_blks_written, blk_read_time, blk_write_time, userid, dbid, queryid FROM pg_stat_statements ORDER BY total_time DESC LIMIT 1000" \
+	"SELECT * FROM pg_extension" \
+    "SELECT * FROM timescaledb_information.hypertables" \
+	"SELECT * FROM timescaledb_information.continuous_aggregates"
   do
     echo "Running SQL in $db: $sql"
 	{
