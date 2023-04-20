@@ -18,14 +18,11 @@ import psycopg2
 import psycopg2.errorcodes
 import psycopg2.extensions
 
-
 PROGNAME = "pgboom"
 
 ACTIONS = ("explode", "implode", "diff", "cat", "test")
 
-IGNORED_SCHEMAS_REGEX = (
-    "^(information_schema|pg_temp|pg_toast|pg_catalog|_timescaledb_|timescaledb_information)"
-)
+IGNORED_SCHEMAS_REGEX = "^(information_schema|pg_temp|pg_toast|pg_catalog|_timescaledb_|timescaledb_information)"
 
 # Rules for producing object definitions:
 # * 'list' query must produce nspname and objname.
@@ -215,9 +212,10 @@ logging.basicConfig(
 
 logger = logging.getLogger()
 
+
 class DatabaseInfo:
     def __init__(self, conn: psycopg2.extensions.connection):
-        self.server_version = 'Unknown'
+        self.server_version = "Unknown"
         self.extensions = {}
         with conn.cursor() as cur:
             cur.execute("SHOW server_version")
@@ -270,8 +268,7 @@ def main() -> None:
 
 
 def get_args() -> argparse.Namespace:
-    """Parse command line arguments.
-    """
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         prog=PROGNAME,
         description=__doc__,
@@ -315,8 +312,7 @@ def get_args() -> argparse.Namespace:
 
 
 def verify_metadir(adir: str) -> bool:
-    """Verifies metadata directory existence and minimal contents.
-    """
+    """Verifies metadata directory existence and minimal contents."""
 
     p = pathlib.Path(adir)
     if not (p.exists() and p.is_dir()):
@@ -343,8 +339,14 @@ def explode(conn: psycopg2.extensions.connection, metadir: str) -> dict:
 
     stats = {}
 
+    extensions = list_extensions(conn)
     for objclass in OBJECTMETA:
         if ARGS.Class is not None and objclass != ARGS.Class:
+            continue
+        if (
+            "requires" in OBJECTMETA[objclass]
+            and OBJECTMETA[objclass]["requires"] not in extensions
+        ):
             continue
         count = explode_objects(conn, metadir, objclass)
         stats[objclass] = count
@@ -411,8 +413,7 @@ def diff(conn: psycopg2.extensions.connection, arg) -> int:
 
 
 def cat() -> dict:
-    """Does the same as implode, but concatenates into --File, not database.
-    """
+    """Does the same as implode, but concatenates into --File, not database."""
 
     if ARGS.File is None:
         raise ValueError('The "cat" action requires --File option.')
@@ -429,8 +430,7 @@ def cat() -> dict:
 
 
 def test() -> tuple:
-    """Performs a built-in test (for developers).
-    """
+    """Performs a built-in test (for developers)."""
 
     logger.info(
         "entering test code - please ignore ERROR messages "
@@ -615,8 +615,7 @@ def db_execute_ddl_file(conn: psycopg2.extensions.connection, filename: str) -> 
             status = cur.statusmessage
             if not is_expected_ddl(status):
                 raise UserWarning(
-                    "Aborting transaction "
-                    f'due to "{status}" while executing "{file}"'
+                    "Aborting transaction " f'due to "{status}" while executing "{file}"'
                 )
         except psycopg2.ProgrammingError as e:
             errcode = psycopg2.errorcodes.lookup(e.pgcode)
@@ -1019,6 +1018,15 @@ def test_exp_imp() -> None:
     >>> cur.execute(f'DROP DATABASE {db2}')
     >>> conn.close()
     """
+
+
+def list_extensions(conn: psycopg2.extensions.connection) -> list:
+    extnames = []
+    with conn.cursor() as cur:
+        cur.execute("SELECT extname FROM pg_extension")
+        for r in cur:
+            extnames.append(r[0])
+    return extnames
 
 
 if __name__ == "__main__":
